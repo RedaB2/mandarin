@@ -38,6 +38,32 @@
   --border-code: #e0e0e0;
 }
 
+/* Dark theme overrides (when html.dark) */
+html.dark {
+  --bg-main: #1a1a1a;
+  --bg-sidebar: #252525;
+  --bg-card: #2a2a2a;
+  --text-primary: #e8e8e8;
+  --text-muted: #9ca3af;
+  --accent: #ed7421;
+  --accent-dark: #f08c42;
+  --accent-secondary: #77c540;
+  --accent-secondary-dark: #8bd655;
+  --accent-subtle: rgba(237, 116, 33, 0.2);
+  --accent-focus: rgba(237, 116, 33, 0.35);
+  --border: #3d3d3d;
+  --border-light: #4a4a4a;
+  --hover: #333333;
+  --error-bg: #3d2525;
+  --error-text: #f0a0a0;
+  --error-border: #8b4545;
+  --gradient-nav: linear-gradient(90deg, #1a1a1a 0%, #252525 50%, #1a1a1a 100%);
+  --gradient-hero: radial-gradient(ellipse 80% 60% at 50% 20%, rgba(237, 116, 33, 0.08) 0%, transparent 60%);
+  --bg-code-inline: rgba(237, 116, 33, 0.15);
+  --bg-code-block: #252525;
+  --border-code: #3d3d3d;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -71,6 +97,14 @@ html, body {
   gap: 1.5rem;
   background: var(--gradient-nav);
 }
+.nav .nav-logo-link {
+  display: flex;
+  align-items: center;
+  text-decoration: none;
+}
+.nav .nav-logo-link:hover {
+  text-decoration: none;
+}
 .nav .app-title {
   display: block;
   height: 2rem;
@@ -85,6 +119,20 @@ html, body {
 }
 .nav a:hover {
   text-decoration: underline;
+}
+.nav-theme-toggle {
+  margin-left: auto;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.nav-theme-toggle:hover {
+  background: var(--hover);
 }
 .main {
   flex: 1;
@@ -154,7 +202,8 @@ html, body {
   background: none;
   color: var(--text-primary);
   cursor: pointer;
-  font: inherit;
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1143,7 +1192,7 @@ html, body {
 }
 
 .message-content {
-  font-size: 0.9rem;
+  font-size: 0.95rem;
   word-break: break-word;
   white-space: pre-wrap;
 }
@@ -1279,21 +1328,43 @@ html, body {
   background: var(--hover);
 }
 
-/* Tighter spacing and smaller font for markdown inside chat messages (assistant responses) */
+/* Tighter spacing for markdown inside chat messages (assistant responses) */
 .message-content .markdown-content {
-  font-size: 0.9rem;
+  font-size: 0.95rem;
   line-height: 1.25;
 }
-.message-content .markdown-content p { margin: 0 0 0.12em 0; }
+.message-content .markdown-content p { margin: 0 0 0.2em 0; }
 .message-content .markdown-content p:last-child { margin-bottom: 0; }
 .message-content .markdown-content ul,
-.message-content .markdown-content ol { margin: 0.06em 0; }
-.message-content .markdown-content li { margin-bottom: 0.04em; }
+.message-content .markdown-content ol { margin: 0 0; padding-left: 1.4em; }
+/* Collapse spacing: no extra gap when list or p follows heading, or p follows list */
+.message-content .markdown-content h1 + ul,
+.message-content .markdown-content h1 + ol,
+.message-content .markdown-content h1 + p,
+.message-content .markdown-content h2 + ul,
+.message-content .markdown-content h2 + ol,
+.message-content .markdown-content h2 + p,
+.message-content .markdown-content h3 + ul,
+.message-content .markdown-content h3 + ol,
+.message-content .markdown-content h3 + p { margin-top: 0; }
+.message-content .markdown-content p + ul,
+.message-content .markdown-content p + ol { margin-top: 0.08em; }
+.message-content .markdown-content ul + p,
+.message-content .markdown-content ol + p { margin-top: 0.08em; }
+.message-content .markdown-content ul + ul,
+.message-content .markdown-content ol + ol,
+.message-content .markdown-content ul + ol,
+.message-content .markdown-content ol + ul { margin-top: 0.05em; }
+.message-content .markdown-content li { margin-bottom: 0.06em; }
+.message-content .markdown-content li:last-child { margin-bottom: 0; }
 .message-content .markdown-content li p { margin: 0; }
 .message-content .markdown-content li p + p { margin-top: 0.12em; }
 .message-content .markdown-content h1,
 .message-content .markdown-content h2,
-.message-content .markdown-content h3 { margin: 0.22em 0 0.06em 0; }
+.message-content .markdown-content h3 { margin: 0.2em 0 0.04em 0; font-weight: 600; }
+.message-content .markdown-content h1:first-child,
+.message-content .markdown-content h2:first-child,
+.message-content .markdown-content h3:first-child { margin-top: 0; }
 .message-content .markdown-content pre { margin: 0.2em 0; }
 .message-content .markdown-content blockquote { margin: 0.18em 0; }
 .message-content .markdown-content table { margin: 0.3em 0; }

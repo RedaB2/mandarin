@@ -394,7 +394,7 @@ def _generate_title(first_user_content):
     from backend.providers import base as providers_base
     snippet = (first_user_content or "")[:100]
     messages = [
-        {"role": "user", "content": f"Generate a very short chat title (few words) for this prompt. Reply with only the title, nothing else.\n\n{snippet}"}
+        {"role": "user", "content": f"Generate an extremely short chat title: 2–4 words max, no punctuation. Reply with only the title, nothing else.\n\n{snippet}"}
     ]
     try:
         model_id = "openai/gpt-5-nano-2025-08-07"
