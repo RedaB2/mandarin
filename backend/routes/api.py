@@ -21,6 +21,11 @@ from backend.services.prompt_builder import (
 )
 from backend.services.prompt_builder import _context_name_from_first_line
 from backend.services.models_config import get_models_list, get_model_info
+from backend.services.settings_store import (
+    get_settings_for_api,
+    update_settings,
+    invalidate_provider_clients,
+)
 import config
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -29,6 +34,30 @@ api_bp = Blueprint("api", __name__, url_prefix="/api")
 @api_bp.route("/models", methods=["GET"])
 def list_models():
     return jsonify(get_models_list())
+
+
+@api_bp.route("/settings", methods=["GET"])
+def get_settings():
+    return jsonify(get_settings_for_api())
+
+
+@api_bp.route("/settings", methods=["PUT"])
+def put_settings():
+    data = request.get_json() or {}
+    updates = {}
+    if "default_model" in data:
+        updates["default_model"] = (data.get("default_model") or "").strip() or None
+    if "api_keys" in data and isinstance(data["api_keys"], dict):
+        updates["api_keys"] = {}
+        for k, v in data["api_keys"].items():
+            if k in ("openai", "anthropic", "google") and v is not None:
+                s = (v or "").strip()
+                if s:
+                    updates["api_keys"][k] = s
+    update_settings(updates)
+    if "api_keys" in updates:
+        invalidate_provider_clients()
+    return jsonify(get_settings_for_api())
 
 
 def _safe_context_id(id_str):

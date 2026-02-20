@@ -28,6 +28,22 @@ export async function getModels() {
   return r.json();
 }
 
+export async function getSettings() {
+  const r = await fetch(`${BASE}/api/settings`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function putSettings(data) {
+  const r = await fetch(`${BASE}/api/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function getContexts() {
   const r = await fetch(`${BASE}/api/contexts`);
   if (!r.ok) throw new Error(await r.text());

@@ -1,8 +1,9 @@
 """Google (Gemini) thin wrapper. generate(messages, model, stream=True) -> yield chunks.
 Uses the google.genai package (not the deprecated google.generativeai)."""
-import config
 from google import genai
 from google.genai import types
+
+from backend.services.settings_store import get_api_key
 
 _client = None
 
@@ -10,9 +11,10 @@ _client = None
 def _get_client():
     global _client
     if _client is None:
-        if not config.GOOGLE_API_KEY:
+        key = get_api_key("google")
+        if not key:
             raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY not set")
-        _client = genai.Client(api_key=config.GOOGLE_API_KEY)
+        _client = genai.Client(api_key=key)
     return _client
 
 

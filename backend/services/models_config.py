@@ -1,16 +1,12 @@
 """Load model list from models.yaml; filter by available API keys."""
-import os
 from pathlib import Path
 import yaml
 
 import config
+from backend.services.settings_store import get_api_key
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "models.yaml"
-_KEY_MAP = {
-    "openai": ("OPENAI_API_KEY", config.OPENAI_API_KEY),
-    "anthropic": ("ANTHROPIC_API_KEY", config.ANTHROPIC_API_KEY),
-    "google": ("GOOGLE_API_KEY", config.GOOGLE_API_KEY),
-}
+_PROVIDERS = ("openai", "anthropic", "google")
 
 
 def _load_yaml():
@@ -24,9 +20,8 @@ def get_models_list():
     """Return list of { id, name, provider, model, available }."""
     data = _load_yaml()
     out = []
-    for provider, key_name_and_value in _KEY_MAP.items():
-        key_name, key_value = key_name_and_value
-        available = bool(key_value and key_value.strip())
+    for provider in _PROVIDERS:
+        available = bool(get_api_key(provider))
         for entry in data.get(provider, []):
             out.append({
                 "id": entry.get("id", ""),

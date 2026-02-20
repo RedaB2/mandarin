@@ -42,6 +42,11 @@ def index_rules():
     return render_template("index.html", page="rules")
 
 
+@app.route("/settings")
+def index_settings():
+    return render_template("index.html", page="settings")
+
+
 @app.route("/assets/<path:filename>")
 def serve_assets(filename):
     """Serve built frontend assets so CSS and JS load reliably."""

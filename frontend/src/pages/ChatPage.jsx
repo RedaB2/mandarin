@@ -4,6 +4,7 @@ import {
   createChat,
   getChat,
   getModels,
+  getSettings,
   addMessageStream,
   regenerateMessageStream,
   getContexts,
@@ -53,15 +54,19 @@ export default function ChatPage() {
   const inputRef = useRef(null);
 
   useEffect(() => {
-    Promise.all([getChats(), getModels(), getContexts(), getRules(), getCommands()])
-      .then(([chatsData, modelsData, contextsData, rulesData, commandsData]) => {
+    Promise.all([getChats(), getModels(), getContexts(), getRules(), getCommands(), getSettings()])
+      .then(([chatsData, modelsData, contextsData, rulesData, commandsData, settingsData]) => {
         setChats(chatsData);
         setContexts(contextsData || []);
         const available = (modelsData || []).filter((m) => m.available);
         setModels(available);
         setAvailableRules(rulesData || []);
         setAvailableCommands(commandsData || []);
-        if (available.length && !selectedModel) setSelectedModel(available[0].id);
+        if (available.length && !selectedModel) {
+          const defaultId = (settingsData?.default_model || "").trim();
+          const defaultAvailable = defaultId && available.some((m) => m.id === defaultId);
+          setSelectedModel(defaultAvailable ? defaultId : available[0].id);
+        }
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
