@@ -348,7 +348,8 @@ def list_chats():
 def create_chat():
     data = request.get_json() or {}
     context_ids = data.get("context_ids", [])
-    chat = Chat(title="New chat", context_ids=context_ids)
+    web_search_enabled = data.get("web_search_enabled", False)
+    chat = Chat(title="New chat", context_ids=context_ids, web_search_enabled=bool(web_search_enabled))
     db.session.add(chat)
     db.session.commit()
     return jsonify(chat.to_dict()), 201
@@ -371,6 +372,8 @@ def update_chat(chat_id):
     if "title" in data:
         title = (data.get("title") or "").strip()
         chat.title = title[:80] if title else chat.title
+    if "web_search_enabled" in data:
+        chat.web_search_enabled = bool(data["web_search_enabled"])
     db.session.commit()
     return jsonify(chat.to_dict())
 
@@ -381,6 +384,14 @@ def delete_chat(chat_id):
     db.session.delete(chat)
     db.session.commit()
     return "", 204
+
+
+def _stream_content_chunked(content, chunk_size=50):
+    """Yield SSE chunk events for content in small pieces so the UI can display progressively."""
+    if not content:
+        return
+    for i in range(0, len(content), chunk_size):
+        yield f"data: {json.dumps({'t': 'chunk', 'c': content[i:i + chunk_size]})}\n\n"
 
 
 def _title_fallback(first_user_content):
@@ -463,22 +474,43 @@ def regenerate_message(chat_id):
 
     def stream():
         from backend.providers import base as providers_base
-        print("\n" + "=" * 60 + " LLM PROMPT (regenerate) " + "=" * 60)
-        for msg in messages_for_llm:
-            role = msg.get("role", "")
-            content_preview = (msg.get("content") or "")[:2000]
-            if len(msg.get("content") or "") > 2000:
-                content_preview += "\n... [truncated]"
-            print(f"\n--- {role.upper()} ---\n{content_preview}")
-        print("=" * 60 + "\n")
-        buffer = []
+        meta = None
         try:
             yield f"data: {json.dumps({'t': 'started'})}\n\n"
-            for chunk in providers_base.generate(messages_for_llm, model_id, stream=True):
-                buffer.append(chunk)
-                yield f"data: {json.dumps({'t': 'chunk', 'c': chunk})}\n\n"
-            full_content = "".join(buffer)
-            assistant_msg = Message(chat_id=chat_id, role="assistant", content=full_content)
+            web_search_enabled = getattr(chat, "web_search_enabled", False)
+            if web_search_enabled:
+                try:
+                    full_content, web_search_meta = None, []
+                    for event in providers_base.generate_with_web_search(messages_for_llm, model_id):
+                        if event[0] == "status":
+                            yield f"data: {json.dumps({'t': 'executing', 'msg': event[1]})}\n\n"
+                        elif event[0] == "result":
+                            full_content, web_search_meta = event[1]
+                            break
+                    if full_content is None:
+                        full_content = ""
+                except Exception as e:
+                    yield f"data: {json.dumps({'t': 'error', 'error': str(e)})}\n\n"
+                    return
+                if full_content:
+                    for sse in _stream_content_chunked(full_content):
+                        yield sse
+                meta = {"web_search": web_search_meta} if web_search_meta else None
+            else:
+                print("\n" + "=" * 60 + " LLM PROMPT (regenerate) " + "=" * 60)
+                for msg in messages_for_llm:
+                    role = msg.get("role", "")
+                    content_preview = (msg.get("content") or "")[:2000]
+                    if len(msg.get("content") or "") > 2000:
+                        content_preview += "\n... [truncated]"
+                    print(f"\n--- {role.upper()} ---\n{content_preview}")
+                print("=" * 60 + "\n")
+                buffer = []
+                for chunk in providers_base.generate(messages_for_llm, model_id, stream=True):
+                    buffer.append(chunk)
+                    yield f"data: {json.dumps({'t': 'chunk', 'c': chunk})}\n\n"
+                full_content = "".join(buffer)
+            assistant_msg = Message(chat_id=chat_id, role="assistant", content=full_content, meta=meta)
             db.session.add(assistant_msg)
             db.session.commit()
             from backend.services.memory_store import extract_and_store
@@ -590,6 +622,7 @@ def add_message(chat_id):
         from backend.services.command_evaluator import evaluate_command_response, execute_task_stream
 
         try:
+            meta = None
             yield f"data: {json.dumps({'t': 'started'})}\n\n"
 
             if use_evaluation:
@@ -648,21 +681,41 @@ def add_message(chat_id):
                             yield f"data: {json.dumps({'t': 'chunk', 'c': chunk})}\n\n"
                         full_content = attempt_content
             else:
-                print("\n" + "=" * 60 + " LLM PROMPT " + "=" * 60)
-                for msg in messages_for_llm:
-                    role = msg.get("role", "")
-                    content_preview = (msg.get("content") or "")[:2000]
-                    if len(msg.get("content") or "") > 2000:
-                        content_preview += "\n... [truncated]"
-                    print(f"\n--- {role.upper()} ---\n{content_preview}")
-                print("=" * 60 + "\n")
-                buffer = []
-                for chunk in providers_base.generate(messages_for_llm, model_id, stream=True):
-                    buffer.append(chunk)
-                    yield f"data: {json.dumps({'t': 'chunk', 'c': chunk})}\n\n"
-                full_content = "".join(buffer)
+                web_search_enabled = getattr(chat, "web_search_enabled", False)
+                if web_search_enabled:
+                    try:
+                        full_content, web_search_meta = None, []
+                        for event in providers_base.generate_with_web_search(messages_for_llm, model_id):
+                            if event[0] == "status":
+                                yield f"data: {json.dumps({'t': 'executing', 'msg': event[1]})}\n\n"
+                            elif event[0] == "result":
+                                full_content, web_search_meta = event[1]
+                                break
+                        if full_content is None:
+                            full_content = ""
+                    except Exception as e:
+                        yield f"data: {json.dumps({'t': 'error', 'error': str(e)})}\n\n"
+                        return
+                    if full_content:
+                        for sse in _stream_content_chunked(full_content):
+                            yield sse
+                    meta = {"web_search": web_search_meta} if web_search_meta else None
+                else:
+                    print("\n" + "=" * 60 + " LLM PROMPT " + "=" * 60)
+                    for msg in messages_for_llm:
+                        role = msg.get("role", "")
+                        content_preview = (msg.get("content") or "")[:2000]
+                        if len(msg.get("content") or "") > 2000:
+                            content_preview += "\n... [truncated]"
+                        print(f"\n--- {role.upper()} ---\n{content_preview}")
+                    print("=" * 60 + "\n")
+                    buffer = []
+                    for chunk in providers_base.generate(messages_for_llm, model_id, stream=True):
+                        buffer.append(chunk)
+                        yield f"data: {json.dumps({'t': 'chunk', 'c': chunk})}\n\n"
+                    full_content = "".join(buffer)
 
-            assistant_msg = Message(chat_id=chat_id, role="assistant", content=full_content)
+            assistant_msg = Message(chat_id=chat_id, role="assistant", content=full_content, meta=meta)
             db.session.add(assistant_msg)
             db.session.flush()
             msg_count = Message.query.filter_by(chat_id=chat_id).count()

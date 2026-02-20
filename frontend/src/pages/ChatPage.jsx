@@ -36,6 +36,7 @@ export default function ChatPage() {
   const [menuOpenForMessageId, setMenuOpenForMessageId] = useState(null);
   const [contextDropdownOpen, setContextDropdownOpen] = useState(false);
   const [pendingContextIds, setPendingContextIds] = useState([]);
+  const [pendingWebSearchEnabled, setPendingWebSearchEnabled] = useState(false);
   const [availableRules, setAvailableRules] = useState([]);
   const [availableCommands, setAvailableCommands] = useState([]);
   const [pickerType, setPickerType] = useState(null); // "rule" | "command" | null
@@ -47,6 +48,7 @@ export default function ChatPage() {
   const [renamingChatId, setRenamingChatId] = useState(null);
   const [renamingChatTitle, setRenamingChatTitle] = useState("");
   const [menuOpenForChatId, setMenuOpenForChatId] = useState(null);
+  const [expandedSourcesMessageIds, setExpandedSourcesMessageIds] = useState(new Set());
   const menuTriggerRef = useRef(null);
   const menuRef = useRef(null);
   const contextDropdownRef = useRef(null);
@@ -61,7 +63,10 @@ export default function ChatPage() {
         setModels(available);
         setAvailableRules(rulesData || []);
         setAvailableCommands(commandsData || []);
-        if (available.length && !selectedModel) setSelectedModel(available[0].id);
+        if (available.length && !selectedModel) {
+          const defaultModel = available.find((m) => m.default);
+          setSelectedModel((defaultModel || available[0]).id);
+        }
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -319,7 +324,7 @@ export default function ChatPage() {
     setInputValue("");
 
     if (!currentChat) {
-      createChat(pendingContextIds)
+      createChat({ context_ids: pendingContextIds, web_search_enabled: pendingWebSearchEnabled })
         .then((chat) => {
           setChats((prev) => [chat, ...prev]);
           setCurrentChat(chat);
@@ -685,6 +690,55 @@ export default function ChatPage() {
                       m.content
                     )}
                   </div>
+                  {m.role === "assistant" && m.meta?.web_search?.length > 0 && (
+                    <div className="message-sources">
+                      <button
+                        type="button"
+                        className="message-sources-toggle"
+                        onClick={() => setExpandedSourcesMessageIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(m.id)) next.delete(m.id);
+                          else next.add(m.id);
+                          return next;
+                        })}
+                        aria-expanded={expandedSourcesMessageIds.has(m.id)}
+                      >
+                        {expandedSourcesMessageIds.has(m.id) ? "▼" : "▶"} Sources
+                      </button>
+                      {expandedSourcesMessageIds.has(m.id) && (
+                        <div className="message-sources-list">
+                          {m.meta.web_search.map((item, idx) => (
+                            <div key={idx} className="message-sources-item">
+                              <div className="message-sources-query">“{item.query}”</div>
+                              {(() => {
+                                const seen = new Set();
+                                return (item.results || []).filter((r) => {
+                                  const url = (r.url || "").trim().toLowerCase();
+                                  if (!url || seen.has(url)) return false;
+                                  seen.add(url);
+                                  return true;
+                                });
+                              })().map((r, rIdx) => (
+                                <div key={rIdx} className="message-sources-result">
+                                  <a href={r.url || "#"} target="_blank" rel="noopener noreferrer" className="message-sources-link">
+                                    {r.title || r.url || "Link"}
+                                  </a>
+                                  {r.url && (
+                                    <a href={r.url} target="_blank" rel="noopener noreferrer" className="message-sources-url">
+                                      {r.url}
+                                    </a>
+                                  )}
+                                  {(r.snippet || r.content) && (
+                                    <p className="message-sources-snippet">{(r.snippet || r.content).slice(0, 300)}{(r.snippet || r.content).length > 300 ? "…" : ""}</p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {!sending && (
                     <div className="message-actions">
                       <button
@@ -787,6 +841,25 @@ export default function ChatPage() {
                 </div>
               )}
             </div>
+            <label className="web-search-toggle">
+              <input
+                type="checkbox"
+                checked={currentChat ? !!currentChat.web_search_enabled : pendingWebSearchEnabled}
+                onChange={() => {
+                  if (currentChat) {
+                    updateChat(currentChat.id, { web_search_enabled: !currentChat.web_search_enabled })
+                      .then((updated) => {
+                        setCurrentChat(updated);
+                        setChats((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+                      })
+                      .catch((e) => setError(e.message));
+                  } else {
+                    setPendingWebSearchEnabled((prev) => !prev);
+                  }
+                }}
+              />
+              <span>Web search</span>
+            </label>
           </div>
           <div className="input-row">
             <textarea

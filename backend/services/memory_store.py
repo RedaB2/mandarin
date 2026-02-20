@@ -55,6 +55,25 @@ def _build_existing_context_text(context_ids):
     return "\n".join(parts)
 
 
+def _get_all_contexts_text():
+    """Return formatted text of ALL human context files (for deduplication checking)."""
+    from backend.services.prompt_builder import list_contexts, _read_context
+    try:
+        all_contexts = list_contexts()
+        parts = []
+        for ctx in all_contexts:
+            parsed = _read_context(ctx["id"])
+            if not parsed:
+                continue
+            name, content = parsed
+            text = (content or "").strip()
+            if text:
+                parts.append(text)
+        return "\n".join(parts) if parts else ""
+    except Exception:
+        return ""
+
+
 def _is_obvious_non_fact(raw):
     """Reject obvious non-facts: single Yes/No, or ends with ?"""
     s = raw.strip()
@@ -63,6 +82,33 @@ def _is_obvious_non_fact(raw):
     if s.upper() in ("YES", "NO"):
         return True
     return False
+
+
+def _check_similarity_in_text(candidate_text, target_text, threshold=0.9):
+    """Check if candidate_text has similarity >= threshold to target_text using embeddings.
+    Returns True if similarity is high enough to consider it a duplicate."""
+    if not target_text or not candidate_text:
+        return False
+    try:
+        from backend.services.rag import _get_embed_fn
+        import numpy as np
+        embed_fn = _get_embed_fn()
+        candidate_vec = np.array(embed_fn([candidate_text])[0])
+        target_vec = np.array(embed_fn([target_text])[0])
+        # Compute cosine similarity
+        similarity = np.dot(candidate_vec, target_vec) / (np.linalg.norm(candidate_vec) * np.linalg.norm(target_vec))
+        return similarity >= threshold
+    except Exception:
+        # If embedding check fails, fall back to simple substring check for exact matches
+        candidate_lower = candidate_text.lower().strip()
+        target_lower = target_text.lower()
+        # Check if candidate appears verbatim in target (allowing for some whitespace differences)
+        if candidate_lower in target_lower:
+            return True
+        # Check if target appears verbatim in candidate
+        if target_lower in candidate_lower:
+            return True
+        return False
 
 
 def extract_and_store(user_content, assistant_content, app, context_ids=None):
@@ -79,22 +125,32 @@ def extract_and_store(user_content, assistant_content, app, context_ids=None):
 
     # Phase 2: Build prompt (Concept B + C)
     prompt_parts = [
-        "You are a memory filter for a personal assistant. After each conversation turn, you decide whether anything the USER said is worth storing as a long-term fact about them.",
+        "You are a memory filter for a personal assistant. Your job is to identify facts about the USER that will remain relevant and useful weeks or months into the future.",
         "",
-        "SAVE only when the USER shared:",
-        "- A concrete fact about their life (e.g. job, family, where they live, what they own, habits).",
-        "- A clear preference or rule they want the assistant to follow in the future.",
-        "- Important context that will help in future conversations (e.g. \"I'm allergic to X\", \"I use metric units\").",
+        "Guidelines for what to save:",
         "",
-        "Do NOT save when:",
-        "- The user only asked a question or made a one-off request.",
-        "- The exchange is casual chat, jokes, or opinions about external things (movies, news).",
-        "- The \"fact\" is already obvious from the conversation (e.g. \"User asked about the weather\").",
-        "- The assistant inferred something the user never stated.",
-        "- The fact is already covered by an existing memory below (same information in different words counts as duplicate; e.g. do not save \"user is 6 foot 4\" if we already have a memory about their height).",
-        "- The fact is already stated in the Existing context section below (that information is already available every time; do not duplicate it).",
-        "- The fact is transient or troubleshooting (e.g. specific commands run, diagnostic steps, one-off fixes).",
-        "- The fact is only relevant to a single session or task (e.g. \"user ran X command today\"); only save enduring facts that will still be useful in the future.",
+        "SAVE facts that:",
+        "- Describe stable, enduring characteristics of the user (who they are, what they prefer, how they work, what they care about)",
+        "- Will help provide better assistance in future conversations, even months later",
+        "- Represent explicit information the user shared or confirmed",
+        "- Are about the user themselves, their preferences, habits, or important context",
+        "",
+        "Examples worth saving:",
+        "- Personal attributes: \"User is 6'4\" tall\", \"User lives in New England\", \"User is a student\"",
+        "- Preferences: \"User prefers dark mode\", \"User uses imperial units\", \"User doesn't like spicy food\"",
+        "- Important context: \"User is allergic to cats\", \"User's main project is mandarin\", \"User has a cat named Lincoln\"",
+        "- Work habits: \"User prefers to work in the morning\", \"User uses Python for most projects\"",
+        "",
+        "DO NOT save:",
+        "- Transient actions: terminal commands, files created, one-off tasks, debugging steps",
+        "- Session-specific details: what happened in this specific conversation",
+        "- Questions or requests: \"User asked about X\" is not a fact about the user",
+        "- Temporary information: things that will be outdated soon",
+        "- Casual chat: opinions about movies/news, jokes, small talk",
+        "- Things already in existing memories or context (check below carefully)",
+        "- Facts that are only relevant right now, not weeks from now",
+        "",
+        "Be selective. When in doubt, err on the side of NOT saving. Only save facts that are clearly valuable long-term.",
         "",
         "Existing memories we already have (do not store something that repeats or is implied by these):",
         existing_memories_text,
@@ -102,14 +158,14 @@ def extract_and_store(user_content, assistant_content, app, context_ids=None):
     if existing_context_text:
         prompt_parts.extend([
             "",
-            "Existing context (do not duplicate):",
+            "Existing context (do not duplicate - this information is already available every time):",
             existing_context_text,
         ])
     prompt_parts.extend([
         "",
         "Reply with exactly one line:",
         "- If nothing is worth saving: NOTHING",
-        "- If something is worth saving: the single fact in 1–2 short sentences (what we learned about the user, not about the world).",
+        "- If something is worth saving: the single fact in 1–2 short sentences (what we learned about the user that will be useful long-term).",
         "",
         f"User: {user_text}",
         f"Assistant: {assistant_text}",
@@ -134,12 +190,30 @@ def extract_and_store(user_content, assistant_content, app, context_ids=None):
 
             candidate_fact = raw.strip()
 
-            # Phase 4: Dedupe check — skip if candidate is too similar to an existing memory
+            # Phase 4: Dedupe check — skip if candidate is too similar to existing memories or appears in ANY context
+            # Check 1: Similarity to existing memories (similarity > 0.9)
+            # top_k=5 is sufficient since duplicates with >0.9 similarity will be at the top of results
             try:
                 from backend.services.rag import query as rag_query
-                dup_hits = rag_query(candidate_fact, top_k=3, min_similarity=0.90)
+                dup_hits = rag_query(candidate_fact, top_k=5, min_similarity=0.90)
                 if dup_hits:
                     return  # treat as duplicate, do not save
+            except Exception:
+                pass
+
+            # Check 2: Check if candidate appears in ANY context (not just current ones) - verbatim or very high similarity (>0.9)
+            try:
+                from backend.services.prompt_builder import list_contexts, _read_context
+                all_contexts = list_contexts()
+                # Check individual context files for better granularity
+                for ctx in all_contexts:
+                    parsed = _read_context(ctx["id"])
+                    if not parsed:
+                        continue
+                    name, content = parsed
+                    text = (content or "").strip()
+                    if text and _check_similarity_in_text(candidate_fact, text, threshold=0.9):
+                        return  # duplicate found in a context file
             except Exception:
                 pass
 

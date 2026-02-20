@@ -34,8 +34,9 @@
   --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
   /* Code (for markdown) */
   --bg-code-inline: rgba(237, 116, 33, 0.12);
-  --bg-code-block: #f0f0f0;
-  --border-code: #e0e0e0;
+  --bg-code-block: #1a2e1a;
+  --text-code: #e8e8e8;
+  --border-code: #2d4a2d;
 }
 
 /* Dark theme overrides (when html.dark) */
@@ -60,8 +61,9 @@ html.dark {
   --gradient-nav: linear-gradient(90deg, #1a1a1a 0%, #252525 50%, #1a1a1a 100%);
   --gradient-hero: radial-gradient(ellipse 80% 60% at 50% 20%, rgba(237, 116, 33, 0.08) 0%, transparent 60%);
   --bg-code-inline: rgba(237, 116, 33, 0.15);
-  --bg-code-block: #252525;
-  --border-code: #3d3d3d;
+  --bg-code-block: #152515;
+  --text-code: #e8e8e8;
+  --border-code: #2a3a2a;
 }
 
 * {
@@ -594,11 +596,22 @@ html, body {
 .context-list.memory-cards .context-card {
   list-style: none;
 }
-.memory-tags {
+.memory-preview {
   flex: 1;
   min-width: 0;
-  font-size: 0.9rem;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.memory-tags {
+  flex-shrink: 0;
+  font-size: 0.75rem;
   color: var(--text-muted);
+  background: var(--bg-main);
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
 }
 .memory-card .memory-edit-inline {
   padding: 1rem;
@@ -1001,6 +1014,34 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.web-search-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.web-search-toggle input { flex-shrink: 0; }
+
+.message-sources { margin-top: 0.5rem; }
+.message-sources-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 0.2rem 0;
+}
+.message-sources-toggle:hover { color: var(--text); }
+.message-sources-list { margin-top: 0.4rem; padding-left: 0.5rem; border-left: 2px solid var(--border); }
+.message-sources-item { margin-bottom: 0.6rem; }
+.message-sources-query { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.25rem; }
+.message-sources-result { margin-bottom: 0.35rem; }
+.message-sources-link { color: var(--accent); text-decoration: none; }
+.message-sources-link:hover { text-decoration: underline; }
+.message-sources-url { display: block; font-size: 0.8rem; color: var(--text-muted); word-break: break-all; }
+.message-sources-snippet { font-size: 0.85rem; margin: 0.2rem 0 0 0; color: var(--text-muted); }
+
 .context-selector-empty {
   padding: 0.5rem 0.75rem;
   font-size: 0.9rem;
@@ -1273,11 +1314,15 @@ html, body {
 }
 .markdown-content p { margin: 0 0 0.45em 0; }
 .markdown-content p:last-child { margin-bottom: 0; }
-.markdown-content ul, .markdown-content ol { margin: 0.35em 0; padding-left: 1.5em; }
-.markdown-content li { margin-bottom: 0.2em; }
+.markdown-content ul, .markdown-content ol { margin: 0.2em 0; padding-left: 1.6em; list-style-position: outside; }
+.markdown-content li { margin-bottom: 0.12em; }
 .markdown-content li:last-child { margin-bottom: 0; }
 .markdown-content li p { margin: 0; }
+.markdown-content li p:first-child { margin-top: 0; padding-top: 0; }
 .markdown-content li p + p { margin-top: 0.35em; }
+/* Spacing for second (and later) block in li when first p is unwrapped by MarkdownContent */
+.markdown-content li > p:not(:first-child) { margin-top: 0.2em; }
+.markdown-content li > * { margin-bottom: 0; }
 .markdown-content h1, .markdown-content h2, .markdown-content h3 { margin: 0.6em 0 0.35em 0; font-weight: 600; }
 .markdown-content h1:first-child, .markdown-content h2:first-child, .markdown-content h3:first-child { margin-top: 0; }
 .markdown-content a { color: var(--accent); text-decoration: none; }
@@ -1288,18 +1333,49 @@ html, body {
   border-radius: 4px;
   font-size: 0.9em;
 }
-.markdown-content pre {
+.markdown-content .code-block-wrap {
   margin: 0.5em 0;
-  padding: 1rem;
   border-radius: 8px;
   background: var(--bg-code-block);
   border: 1px solid var(--border-code);
+  position: relative;
+}
+.markdown-content .code-block-copy {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-code);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+}
+.markdown-content .code-block-wrap:hover .code-block-copy {
+  opacity: 1;
+}
+.markdown-content .code-block-copy:hover {
+  background: var(--hover);
+}
+.markdown-content .code-block-copy.copied {
+  opacity: 1;
+  color: var(--accent-secondary);
+}
+.markdown-content .code-block-wrap pre {
+  margin: 0;
+  padding: 2.25rem 1rem 1rem 1rem;
+  border-radius: 8px;
   overflow-x: auto;
 }
-.markdown-content pre code {
+.markdown-content pre code,
+.markdown-content pre code.hljs {
   background: none;
   padding: 0;
   font-size: 0.875rem;
+  color: var(--text-code);
 }
 .markdown-content blockquote {
   margin: 0.5em 0;
@@ -1336,7 +1412,7 @@ html, body {
 .message-content .markdown-content p { margin: 0 0 0.2em 0; }
 .message-content .markdown-content p:last-child { margin-bottom: 0; }
 .message-content .markdown-content ul,
-.message-content .markdown-content ol { margin: 0 0; padding-left: 1.4em; }
+.message-content .markdown-content ol { margin: 0 0; padding-left: 1.6em; list-style-position: outside; }
 /* Collapse spacing: no extra gap when list or p follows heading, or p follows list */
 .message-content .markdown-content h1 + ul,
 .message-content .markdown-content h1 + ol,
@@ -1355,17 +1431,19 @@ html, body {
 .message-content .markdown-content ol + ol,
 .message-content .markdown-content ul + ol,
 .message-content .markdown-content ol + ul { margin-top: 0.05em; }
-.message-content .markdown-content li { margin-bottom: 0.06em; }
+.message-content .markdown-content li { margin-bottom: 0.04em; }
 .message-content .markdown-content li:last-child { margin-bottom: 0; }
 .message-content .markdown-content li p { margin: 0; }
 .message-content .markdown-content li p + p { margin-top: 0.12em; }
+.message-content .markdown-content li > p:not(:first-child) { margin-top: 0.12em; }
+.message-content .markdown-content li > * { margin-bottom: 0; }
 .message-content .markdown-content h1,
 .message-content .markdown-content h2,
 .message-content .markdown-content h3 { margin: 0.2em 0 0.04em 0; font-weight: 600; }
 .message-content .markdown-content h1:first-child,
 .message-content .markdown-content h2:first-child,
 .message-content .markdown-content h3:first-child { margin-top: 0; }
-.message-content .markdown-content pre { margin: 0.2em 0; }
+.message-content .markdown-content .code-block-wrap { margin: 0.2em 0; }
 .message-content .markdown-content blockquote { margin: 0.18em 0; }
 .message-content .markdown-content table { margin: 0.3em 0; }
 .message-content .markdown-content th,

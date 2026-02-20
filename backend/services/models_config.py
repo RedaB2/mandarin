@@ -21,19 +21,22 @@ def _load_yaml():
 
 
 def get_models_list():
-    """Return list of { id, name, provider, model, available }."""
+    """Return list of { id, name, provider, model, available, default }."""
     data = _load_yaml()
+    default_id = (data.get("default") or "").strip() or None
     out = []
     for provider, key_name_and_value in _KEY_MAP.items():
         key_name, key_value = key_name_and_value
         available = bool(key_value and key_value.strip())
         for entry in data.get(provider, []):
+            entry_id = entry.get("id", "")
             out.append({
-                "id": entry.get("id", ""),
-                "name": entry.get("name", entry.get("id", "")),
+                "id": entry_id,
+                "name": entry.get("name", entry_id or ""),
                 "provider": provider,
                 "model": entry.get("model", ""),
                 "available": available,
+                "default": default_id is not None and entry_id == default_id,
             })
     return out
 

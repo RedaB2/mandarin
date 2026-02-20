@@ -13,6 +13,15 @@ function _contentWithoutTitle(text) {
   return text;
 }
 
+function _memoryPreview(content, maxLen = 80) {
+  if (!content || typeof content !== "string") return "—";
+  const s = content.trim();
+  if (!s) return "—";
+  const firstLine = s.split("\n")[0]?.trim() || s;
+  if (firstLine.length <= maxLen) return firstLine;
+  return firstLine.slice(0, maxLen) + "…";
+}
+
 export default function ContextsPage() {
   const [activeTab, setActiveTab] = useState(TAB_HUMAN);
   const [contexts, setContexts] = useState([]);
@@ -142,7 +151,7 @@ export default function ContextsPage() {
   const startEditMemory = (m) => {
     setEditingId(null);
     setEditContent("");
-    setExpandedMemoryId(null);
+    setExpandedMemoryIds((prev) => { const next = new Set(prev); next.delete(m.id); return next; });
     setEditingMemId(m.id);
     setEditMemContent(m.content);
   };
@@ -159,11 +168,11 @@ export default function ContextsPage() {
 
   const doDeleteMemory = (id) => {
     if (!window.confirm("Delete this memory?")) return;
-    deleteMemory(id)
+        deleteMemory(id)
       .then(() => {
         setMemoryList((prev) => prev.filter((m) => m.id !== id));
         if (editingMemId === id) setEditingMemId(null);
-        setExpandedMemoryId((prev) => (prev === id ? null : prev));
+        setExpandedMemoryIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
       })
       .catch((e) => setError(e.message));
   };
@@ -325,7 +334,10 @@ export default function ContextsPage() {
                   >
                     <span className={`context-card-chevron ${expandedMemoryIds.has(m.id) || editingMemId === m.id ? "expanded" : ""}`} aria-hidden>▼</span>
                   </button>
-                  <span className="context-id memory-tags">{(m.tags || []).join(", ") || "—"}</span>
+                  <span className="memory-preview" title={m.content}>{_memoryPreview(m.content)}</span>
+                  {(m.tags || []).length > 0 && (
+                    <span className="context-id memory-tags">{(m.tags || []).join(", ")}</span>
+                  )}
                   <div className="context-card-actions">
                     <button type="button" className="btn small" onClick={() => startEditMemory(m)}>Edit</button>
                     <button type="button" className="btn small danger" onClick={() => doDeleteMemory(m.id)}>Delete</button>

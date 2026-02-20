@@ -6,11 +6,13 @@ export async function getChats() {
   return r.json();
 }
 
-export async function createChat(contextIds = []) {
+export async function createChat(options = {}) {
+  const contextIds = Array.isArray(options) ? options : (options.context_ids ?? []);
+  const webSearchEnabled = Array.isArray(options) ? false : !!options.web_search_enabled;
   const r = await fetch(`${BASE}/api/chats`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ context_ids: contextIds }),
+    body: JSON.stringify({ context_ids: contextIds, web_search_enabled: webSearchEnabled }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
