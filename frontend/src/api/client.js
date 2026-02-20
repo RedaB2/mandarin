@@ -181,8 +181,16 @@ export async function addMessageStream(chatId, content, modelId, { onStarted, on
     body: JSON.stringify({ content, model_id: modelId }),
   });
   if (!r.ok) {
-    const data = await r.json().catch(() => ({}));
-    throw new Error(data.error || await r.text() || "Failed to send");
+    const text = await r.text();
+    let msg = "Failed to send";
+    try {
+      const data = JSON.parse(text);
+      if (data?.error) msg = data.error;
+      else if (text) msg = text;
+    } catch {
+      if (text) msg = text;
+    }
+    throw new Error(msg);
   }
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
@@ -229,8 +237,16 @@ export async function regenerateMessageStream(chatId, userMessageId, modelId, { 
     body: JSON.stringify({ message_id: userMessageId, model_id: modelId }),
   });
   if (!r.ok) {
-    const data = await r.json().catch(() => ({}));
-    throw new Error(data.error || await r.text() || "Failed to regenerate");
+    const text = await r.text();
+    let msg = "Failed to regenerate";
+    try {
+      const data = JSON.parse(text);
+      if (data?.error) msg = data.error;
+      else if (text) msg = text;
+    } catch {
+      if (text) msg = text;
+    }
+    throw new Error(msg);
   }
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
