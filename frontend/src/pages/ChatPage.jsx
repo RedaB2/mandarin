@@ -19,6 +19,9 @@ import MarkdownContent from "../components/MarkdownContent";
 
 const MENU_GAP = 4;
 const VIEWPORT_PADDING = 8;
+const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_ATTACHMENTS = 3;
+const ALLOWED_ATTACHMENT_EXTENSIONS = [".pdf", ".docx", ".txt", ".md", ".py", ".png", ".jpg", ".jpeg", ".webp"];
 
 export default function ChatPage() {
   const [chats, setChats] = useState([]);
@@ -37,6 +40,7 @@ export default function ChatPage() {
   const [menuOpenForMessageId, setMenuOpenForMessageId] = useState(null);
   const [contextDropdownOpen, setContextDropdownOpen] = useState(false);
   const [pendingContextIds, setPendingContextIds] = useState([]);
+  const [pendingWebSearchEnabled, setPendingWebSearchEnabled] = useState(false);
   const [availableRules, setAvailableRules] = useState([]);
   const [availableCommands, setAvailableCommands] = useState([]);
   const [pickerType, setPickerType] = useState(null); // "rule" | "command" | null
@@ -48,10 +52,13 @@ export default function ChatPage() {
   const [renamingChatId, setRenamingChatId] = useState(null);
   const [renamingChatTitle, setRenamingChatTitle] = useState("");
   const [menuOpenForChatId, setMenuOpenForChatId] = useState(null);
+  const [expandedSourcesMessageIds, setExpandedSourcesMessageIds] = useState(new Set());
+  const [pendingAttachments, setPendingAttachments] = useState([]);
   const menuTriggerRef = useRef(null);
   const menuRef = useRef(null);
   const contextDropdownRef = useRef(null);
   const inputRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     Promise.all([getChats(), getModels(), getContexts(), getRules(), getCommands(), getSettings()])
@@ -313,24 +320,50 @@ export default function ChatPage() {
       });
   };
 
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    const ext = (name) => (name.includes(".") ? "." + name.split(".").pop().toLowerCase() : "");
+    const valid = files.filter((f) => {
+      if (f.size > MAX_ATTACHMENT_SIZE) {
+        setError(`File too large: ${f.name} (max 10 MB)`);
+        return false;
+      }
+      if (!ALLOWED_ATTACHMENT_EXTENSIONS.includes(ext(f.name))) {
+        setError(`File type not allowed: ${f.name}`);
+        return false;
+      }
+      return true;
+    });
+    setError(null);
+    setPendingAttachments((prev) => [...prev, ...valid].slice(0, MAX_ATTACHMENTS));
+  };
+
+  const removeAttachment = (index) => {
+    setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleSend = () => {
     const content = inputValue.trim();
     if (!content || !selectedModel) return;
     setSending(true);
     setError(null);
     setStreamingContent("");
-    const userMsg = { id: "temp-user", role: "user", content };
+    const userMsg = { id: "temp-user", role: "user", content, attachments: pendingAttachments.length ? pendingAttachments.map((f) => ({ type: "file", filename: f.name })) : [] };
     const placeholderAssistant = { id: "temp-assistant", role: "assistant", content: "" };
     setInputValue("");
+    const attachmentsToSend = [...pendingAttachments];
+    setPendingAttachments([]);
 
     if (!currentChat) {
-      createChat(pendingContextIds)
+      createChat({ context_ids: pendingContextIds, web_search_enabled: pendingWebSearchEnabled })
         .then((chat) => {
           setChats((prev) => [chat, ...prev]);
           setCurrentChat(chat);
           setMessages([userMsg, placeholderAssistant]);
           setStreamingStatus(content.trim().startsWith("/") ? "Completing task..." : "Thinking...");
           return addMessageStream(chat.id, content, selectedModel, {
+            attachments: attachmentsToSend,
             onChunk: (c) => setStreamingContent((prev) => prev + c),
             onStatus: (msg) => setStreamingStatus(msg),
             onDone: (fullContent, payload) => {
@@ -370,6 +403,7 @@ export default function ChatPage() {
     setMessages((prev) => [...prev, userMsg, placeholderAssistant]);
     setStreamingStatus(content.trim().startsWith("/") ? "Completing task..." : "Thinking...");
     addMessageStream(currentChat.id, content, selectedModel, {
+      attachments: attachmentsToSend,
       onChunk: (c) => setStreamingContent((prev) => prev + c),
       onStatus: (msg) => setStreamingStatus(msg),
       onDone: (fullContent, payload) => {
@@ -687,9 +721,80 @@ export default function ChatPage() {
                         <MarkdownContent key={`msg-${msgIndex}-${m.id}`} content={isStreamingThisMessage ? (streamingContent || m.content || "") : (m.content || "")} />
                       )
                     ) : (
-                      m.content
+                      <>
+                        {m.content}
+                        {m.attachments?.length > 0 && (
+                          <div className="message-attachments">
+                            {m.attachments.map((att, idx) => {
+                              const ext = (att.filename || "").includes(".") ? "." + (att.filename || "").split(".").pop().toLowerCase() : "";
+                              const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" }[ext] || "image/png";
+                              return (
+                                <div key={idx} className="message-attachment">
+                                  {att.type === "image" && att.image_data ? (
+                                    <img
+                                      src={`data:${mime};base64,${att.image_data}`}
+                                      alt={att.filename || "Image"}
+                                      className="message-attachment-img"
+                                    />
+                                  ) : null}
+                                  <span className="message-attachment-name">Attachment: {att.filename || "file"}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
+                  {m.role === "assistant" && m.meta?.web_search?.length > 0 && (
+                    <div className="message-sources">
+                      <button
+                        type="button"
+                        className="message-sources-toggle"
+                        onClick={() => setExpandedSourcesMessageIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(m.id)) next.delete(m.id);
+                          else next.add(m.id);
+                          return next;
+                        })}
+                        aria-expanded={expandedSourcesMessageIds.has(m.id)}
+                      >
+                        {expandedSourcesMessageIds.has(m.id) ? "▼" : "▶"} Sources
+                      </button>
+                      {expandedSourcesMessageIds.has(m.id) && (
+                        <div className="message-sources-list">
+                          {m.meta.web_search.map((item, idx) => (
+                            <div key={idx} className="message-sources-item">
+                              <div className="message-sources-query">“{item.query}”</div>
+                              {(() => {
+                                const seen = new Set();
+                                return (item.results || []).filter((r) => {
+                                  const url = (r.url || "").trim().toLowerCase();
+                                  if (!url || seen.has(url)) return false;
+                                  seen.add(url);
+                                  return true;
+                                });
+                              })().map((r, rIdx) => (
+                                <div key={rIdx} className="message-sources-result">
+                                  <a href={r.url || "#"} target="_blank" rel="noopener noreferrer" className="message-sources-link">
+                                    {r.title || r.url || "Link"}
+                                  </a>
+                                  {r.url && (
+                                    <a href={r.url} target="_blank" rel="noopener noreferrer" className="message-sources-url">
+                                      {r.url}
+                                    </a>
+                                  )}
+                                  {(r.snippet || r.content) && (
+                                    <p className="message-sources-snippet">{(r.snippet || r.content).slice(0, 300)}{(r.snippet || r.content).length > 300 ? "…" : ""}</p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {!sending && (
                     <div className="message-actions">
                       <button
@@ -792,8 +897,56 @@ export default function ChatPage() {
                 </div>
               )}
             </div>
+            <label className="web-search-toggle">
+              <input
+                type="checkbox"
+                checked={currentChat ? !!currentChat.web_search_enabled : pendingWebSearchEnabled}
+                onChange={() => {
+                  if (currentChat) {
+                    updateChat(currentChat.id, { web_search_enabled: !currentChat.web_search_enabled })
+                      .then((updated) => {
+                        setCurrentChat(updated);
+                        setChats((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+                      })
+                      .catch((e) => setError(e.message));
+                  } else {
+                    setPendingWebSearchEnabled((prev) => !prev);
+                  }
+                }}
+              />
+              <span>Web search</span>
+            </label>
           </div>
+          {pendingAttachments.length > 0 && (
+            <div className="input-attachments">
+              {pendingAttachments.map((file, idx) => (
+                <span key={idx} className="input-attachment-chip">
+                  {file.name}
+                  <button type="button" className="input-attachment-remove" onClick={() => removeAttachment(idx)} aria-label="Remove attachment">×</button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="input-row">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.docx,.txt,.md,.py,.png,.jpg,.jpeg,.webp"
+              multiple
+              className="input-file-hidden"
+              onChange={handleFileSelect}
+              aria-hidden
+            />
+            <button
+              type="button"
+              className="attach-btn"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={pendingAttachments.length >= MAX_ATTACHMENTS || sending}
+              title={`Attach file (max ${MAX_ATTACHMENTS}, 10 MB each). PDF, DOCX, text, images.`}
+              aria-label="Attach file"
+            >
+              📎
+            </button>
             <textarea
               ref={inputRef}
               className="message-input"

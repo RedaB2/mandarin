@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.services.prompt_builder import Command
+from backend.services.prompt_loader import load_prompt
 
 
 def execute_task_stream(
@@ -22,13 +23,24 @@ def execute_task_stream(
 
     task = command.task or ""
     guidelines = command.guidelines or ""
-    parts = []
+    previous_feedback_block = ""
     if previous_feedback:
-        parts.append(
-            f"Previous attempt did not meet success criteria. Evaluation feedback: {previous_feedback}\n\nPlease try again, addressing the feedback.\n\n"
+        previous_feedback_block = (
+            f"Previous attempt did not meet success criteria. Evaluation feedback: {previous_feedback}\n\n"
+            "Please try again, addressing the feedback.\n\n"
         )
-    parts.append(f"## Task\n\n{task}\n\n## Guidelines\n\n{guidelines}\n\n## User message\n\n{user_instructions}")
-    user_content = "".join(parts)
+    template = load_prompt("command_task")
+    if template:
+        user_content = (
+            template.replace("{{PREVIOUS_FEEDBACK}}", previous_feedback_block)
+            .replace("{{TASK}}", task)
+            .replace("{{GUIDELINES}}", guidelines)
+            .replace("{{USER_INSTRUCTIONS}}", user_instructions)
+        )
+    else:
+        user_content = f"## Task\n\n{task}\n\n## Guidelines\n\n{guidelines}\n\n## User message\n\n{user_instructions}"
+        if previous_feedback_block:
+            user_content = previous_feedback_block + user_content
 
     messages_for_llm: List[Dict[str, Any]] = []
     if system:
@@ -38,23 +50,16 @@ def execute_task_stream(
 
     yield from providers_base.generate(messages_for_llm, model_id, stream=True)
 
-EVALUATION_PROMPT = """You are an evaluation agent. Review the following response to determine if it meets the success criteria while following the guidelines.
-
-Task: {task}
-
-Success Criteria:
-{success_criteria}
-
-Guidelines:
-{guidelines}
-
-User Instructions:
-{user_instructions}
-
-Assistant Response:
-{assistant_response}
-
-Does this response meet all success criteria while following the guidelines? Reply with YES or NO, then explain your reasoning."""
+def _get_evaluation_prompt():
+    """Load evaluation prompt from prompts/command_evaluation.md; fallback to inline if missing."""
+    prompt = load_prompt("command_evaluation")
+    if prompt:
+        return prompt
+    return (
+        "Task: {task}\nSuccess Criteria:\n{success_criteria}\nGuidelines:\n{guidelines}\n"
+        "User Instructions:\n{user_instructions}\nAssistant Response:\n{assistant_response}\n"
+        "Does this response meet all success criteria? Reply with YES or NO, then explain."
+    )
 
 
 def evaluate_command_response(
@@ -79,7 +84,7 @@ def evaluate_command_response(
     """
     from backend.providers import base as providers_base
 
-    prompt = EVALUATION_PROMPT.format(
+    prompt = _get_evaluation_prompt().format(
         task=task or "(none)",
         success_criteria=success_criteria or "(none)",
         guidelines=guidelines or "(none)",

@@ -1,6 +1,7 @@
 """Should we store? Small model decides from last turn; insert into Memory only when appropriate."""
 from backend.models import db, Memory
-from backend.services.models_config import get_model_info
+from backend.services.models_config import get_model_info, get_memory_extractor_model_id
+from backend.services.prompt_loader import load_prompt
 from backend.providers import base as providers_base
 
 _MIN_FACT_LENGTH = 10
@@ -55,6 +56,25 @@ def _build_existing_context_text(context_ids):
     return "\n".join(parts)
 
 
+def _get_all_contexts_text():
+    """Return formatted text of ALL human context files (for deduplication checking)."""
+    from backend.services.prompt_builder import list_contexts, _read_context
+    try:
+        all_contexts = list_contexts()
+        parts = []
+        for ctx in all_contexts:
+            parsed = _read_context(ctx["id"])
+            if not parsed:
+                continue
+            name, content = parsed
+            text = (content or "").strip()
+            if text:
+                parts.append(text)
+        return "\n".join(parts) if parts else ""
+    except Exception:
+        return ""
+
+
 def _is_obvious_non_fact(raw):
     """Reject obvious non-facts: single Yes/No, or ends with ?"""
     s = raw.strip()
@@ -65,9 +85,68 @@ def _is_obvious_non_fact(raw):
     return False
 
 
+def _check_similarity_in_text(candidate_text, target_text, threshold=0.9):
+    """Check if candidate_text has similarity >= threshold to target_text using embeddings.
+    Returns True if similarity is high enough to consider it a duplicate."""
+    if not target_text or not candidate_text:
+        return False
+    try:
+        from backend.services.rag import _get_embed_fn
+        import numpy as np
+        embed_fn = _get_embed_fn()
+        candidate_vec = np.array(embed_fn([candidate_text])[0])
+        target_vec = np.array(embed_fn([target_text])[0])
+        # Compute cosine similarity
+        similarity = np.dot(candidate_vec, target_vec) / (np.linalg.norm(candidate_vec) * np.linalg.norm(target_vec))
+        return similarity >= threshold
+    except Exception:
+        # If embedding check fails, fall back to simple substring check for exact matches
+        candidate_lower = candidate_text.lower().strip()
+        target_lower = target_text.lower()
+        # Check if candidate appears verbatim in target (allowing for some whitespace differences)
+        if candidate_lower in target_lower:
+            return True
+        # Check if target appears verbatim in candidate
+        if target_lower in candidate_lower:
+            return True
+        return False
+
+
+def _check_similarity_in_long_text(candidate_text, target_text, threshold=0.9):
+    """Check if candidate_text is similar to any chunk of target_text (for long context files).
+    Uses chunked embedding comparison so we don't truncate long contexts and miss duplicates."""
+    if not target_text or not candidate_text:
+        return False
+    try:
+        from backend.services.rag import chunk_text_for_embedding, _get_embed_fn
+        import numpy as np
+        chunks = chunk_text_for_embedding(target_text)
+        if not chunks:
+            return False
+        embed_fn = _get_embed_fn()
+        candidate_vec = np.array(embed_fn([candidate_text])[0])
+        norm_c = np.linalg.norm(candidate_vec)
+        if norm_c == 0:
+            return False
+        for chunk in chunks:
+            if not chunk.strip():
+                continue
+            chunk_vec = np.array(embed_fn([chunk])[0])
+            similarity = np.dot(candidate_vec, chunk_vec) / (norm_c * np.linalg.norm(chunk_vec))
+            if similarity >= threshold:
+                return True
+        return False
+    except Exception:
+        candidate_lower = candidate_text.lower().strip()
+        target_lower = target_text.lower()
+        if candidate_lower in target_lower or target_lower in candidate_lower:
+            return True
+        return False
+
+
 def extract_and_store(user_content, assistant_content, app, context_ids=None):
     """Run in background: ask small model if there is a fact worth storing; if yes and not duplicate, insert Memory."""
-    model_id = _pick_small_model()
+    model_id = get_memory_extractor_model_id() or _pick_small_model()
     if not model_id:
         return
 
@@ -77,46 +156,24 @@ def extract_and_store(user_content, assistant_content, app, context_ids=None):
     existing_memories_text = _build_existing_memories_text(user_content or "")
     existing_context_text = _build_existing_context_text(context_ids or [])
 
-    # Phase 2: Build prompt (Concept B + C)
-    prompt_parts = [
-        "You are a memory filter for a personal assistant. After each conversation turn, you decide whether anything the USER said is worth storing as a long-term fact about them.",
-        "",
-        "SAVE only when the USER shared:",
-        "- A concrete fact about their life (e.g. job, family, where they live, what they own, habits).",
-        "- A clear preference or rule they want the assistant to follow in the future.",
-        "- Important context that will help in future conversations (e.g. \"I'm allergic to X\", \"I use metric units\").",
-        "",
-        "Do NOT save when:",
-        "- The user only asked a question or made a one-off request.",
-        "- The exchange is casual chat, jokes, or opinions about external things (movies, news).",
-        "- The \"fact\" is already obvious from the conversation (e.g. \"User asked about the weather\").",
-        "- The assistant inferred something the user never stated.",
-        "- The fact is already covered by an existing memory below (same information in different words counts as duplicate; e.g. do not save \"user is 6 foot 4\" if we already have a memory about their height).",
-        "- The fact is already stated in the Existing context section below (that information is already available every time; do not duplicate it).",
-        "- The fact is transient or troubleshooting (e.g. specific commands run, diagnostic steps, one-off fixes).",
-        "- The fact is only relevant to a single session or task (e.g. \"user ran X command today\"); only save enduring facts that will still be useful in the future.",
-        "",
-        "Existing memories we already have (do not store something that repeats or is implied by these):",
-        existing_memories_text,
-    ]
+    # Phase 2: Build prompt from template
+    template = load_prompt("memory_extraction")
+    if not template:
+        return
+    existing_context_block = ""
     if existing_context_text:
-        prompt_parts.extend([
-            "",
-            "Existing context (do not duplicate):",
-            existing_context_text,
-        ])
-    prompt_parts.extend([
-        "",
-        "Reply with exactly one line:",
-        "- If nothing is worth saving: NOTHING",
-        "- If something is worth saving: the single fact in 1–2 short sentences (what we learned about the user, not about the world).",
-        "",
-        f"User: {user_text}",
-        f"Assistant: {assistant_text}",
-    ])
-    prompt = "\n".join(prompt_parts)
+        existing_context_block = (
+            "\n\nExisting context (do not duplicate - this information is already available every time):\n"
+            + existing_context_text
+        )
+    system_content = template.replace("{{EXISTING_MEMORIES}}", existing_memories_text).replace(
+        "{{EXISTING_CONTEXT}}", existing_context_block
+    ).replace("{{USER_TEXT}}", user_text).replace("{{ASSISTANT_TEXT}}", assistant_text)
 
-    messages = [{"role": "user", "content": prompt}]
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": "Reply with exactly one line: NOTHING or the single fact. No explanation."},
+    ]
     try:
         with app.app_context():
             parts = list(providers_base.generate(messages, model_id, stream=True))
@@ -134,12 +191,29 @@ def extract_and_store(user_content, assistant_content, app, context_ids=None):
 
             candidate_fact = raw.strip()
 
-            # Phase 4: Dedupe check — skip if candidate is too similar to an existing memory
+            # Phase 4: Dedupe check — skip if candidate is too similar to existing memories or appears in ANY context
+            # Check 1: Similarity to existing memories (similarity > 0.9)
+            # top_k=5 is sufficient since duplicates with >0.9 similarity will be at the top of results
             try:
                 from backend.services.rag import query as rag_query
-                dup_hits = rag_query(candidate_fact, top_k=3, min_similarity=0.90)
+                dup_hits = rag_query(candidate_fact, top_k=5, min_similarity=0.90)
                 if dup_hits:
                     return  # treat as duplicate, do not save
+            except Exception:
+                pass
+
+            # Check 2: Check if candidate appears in ANY context (not just current ones) - chunked comparison for long contexts
+            try:
+                from backend.services.prompt_builder import list_contexts, _read_context
+                all_contexts = list_contexts()
+                for ctx in all_contexts:
+                    parsed = _read_context(ctx["id"])
+                    if not parsed:
+                        continue
+                    name, content = parsed
+                    text = (content or "").strip()
+                    if text and _check_similarity_in_long_text(candidate_fact, text, threshold=0.9):
+                        return  # duplicate found in a context file
             except Exception:
                 pass
 

@@ -14,6 +14,7 @@ except Exception as e:
 
 _collection = None
 _embed_fn = None
+_model = None
 
 
 def sync_memories_from_db(app):
@@ -30,16 +31,62 @@ def sync_memories_from_db(app):
 
 
 def _get_embed_fn():
-    global _embed_fn
+    global _embed_fn, _model
     if _embed_fn is None:
         from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("all-MiniLM-L6-v2")
+        model = SentenceTransformer(config.RAG_EMBEDDING_MODEL)
+        _model = model
 
         def _embed(texts):
             arr = model.encode(texts)
             return arr.tolist() if hasattr(arr, "tolist") else list(arr)
         _embed_fn = _embed
     return _embed_fn
+
+
+def _get_model():
+    """Return the loaded SentenceTransformer model (for tokenizer / max_seq_length). Loads model if needed."""
+    _get_embed_fn()
+    return _model
+
+
+def chunk_text_for_embedding(text, max_tokens=None):
+    """Split long text into chunks that fit the embedding model's max length. Used for context dedup only.
+    Returns list of non-empty strings. If tokenizer fails, returns [text] or []."""
+    if not (text or "").strip():
+        return []
+    try:
+        model = _get_model()
+        tokenizer = model.tokenizer
+        max_len = max_tokens if max_tokens is not None else model.max_seq_length
+        encoded = tokenizer.encode(
+            text.strip(),
+            add_special_tokens=False,
+            truncation=False,
+            return_tensors=None,
+        )
+        if not encoded:
+            return [text.strip()]
+        chunks = []
+        for i in range(0, len(encoded), max_len):
+            chunk_ids = encoded[i : i + max_len]
+            chunk_text = tokenizer.decode(chunk_ids, skip_special_tokens=True).strip()
+            if chunk_text:
+                chunks.append(chunk_text)
+        return chunks if chunks else [text.strip()]
+    except Exception:
+        return [text.strip()] if text.strip() else []
+
+
+def clear_memory_collection():
+    """Remove all vectors from the Chroma memory collection. Used by the re-embed script after switching models."""
+    if not _chromadb_available:
+        return
+    coll = _get_collection()
+    res = coll.get()
+    ids = res.get("ids") or []
+    if ids:
+        coll.delete(ids=ids)
 
 
 def _get_collection():

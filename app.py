@@ -24,6 +24,22 @@ app.register_blueprint(api_bp)
 
 with app.app_context():
     db.create_all()
+    # Migration: add web_search and message.meta columns if missing (e.g. existing DBs)
+    try:
+        from sqlalchemy import text
+        with db.engine.connect() as conn:
+            for stmt in (
+                "ALTER TABLE chats ADD COLUMN web_search_enabled BOOLEAN DEFAULT 0",
+                "ALTER TABLE messages ADD COLUMN meta JSON",
+                "ALTER TABLE messages ADD COLUMN attachments JSON",
+            ):
+                try:
+                    conn.execute(text(stmt))
+                    conn.commit()
+                except Exception:
+                    pass
+    except Exception:
+        pass
     sync_memories_from_db(app)
 
 

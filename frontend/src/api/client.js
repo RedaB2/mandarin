@@ -6,11 +6,13 @@ export async function getChats() {
   return r.json();
 }
 
-export async function createChat(contextIds = []) {
+export async function createChat(options = {}) {
+  const contextIds = Array.isArray(options) ? options : (options.context_ids ?? []);
+  const webSearchEnabled = Array.isArray(options) ? false : !!options.web_search_enabled;
   const r = await fetch(`${BASE}/api/chats`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ context_ids: contextIds }),
+    body: JSON.stringify({ context_ids: contextIds, web_search_enabled: webSearchEnabled }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -186,15 +188,42 @@ export async function deleteCommand(id) {
   if (!r.ok) throw new Error(await r.text());
 }
 
+const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_ATTACHMENTS = 3;
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      const base64 = dataUrl.indexOf("base64,") >= 0 ? dataUrl.split("base64,")[1] : null;
+      resolve(base64);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
 /**
  * Send message and stream assistant reply. Calls onStarted() when request accepted, onChunk(text) for each chunk, onDone(fullContent, payload) when finished.
- * On 4xx, throws with message from body.error.
+ * attachments: optional array of File objects (max 3, max 10 MB each). On 4xx, throws with message from body.error.
  */
-export async function addMessageStream(chatId, content, modelId, { onStarted, onChunk, onDone, onStatus }) {
+export async function addMessageStream(chatId, content, modelId, { onStarted, onChunk, onDone, onStatus, attachments: attachmentFiles = [] }) {
+  let body = { content, model_id: modelId };
+  if (attachmentFiles.length > 0) {
+    const attachments = await Promise.all(
+      attachmentFiles.slice(0, MAX_ATTACHMENTS).map(async (file) => ({
+        filename: file.name || "file",
+        content_type: file.type || null,
+        data: await fileToBase64(file),
+      }))
+    );
+    body = { ...body, attachments };
+  }
   const r = await fetch(`${BASE}/api/chats/${chatId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content, model_id: modelId }),
+    body: JSON.stringify(body),
   });
   if (!r.ok) {
     const text = await r.text();

@@ -8,38 +8,14 @@ from zoneinfo import ZoneInfo
 import yaml
 
 import config
-
-
-_DEFAULT_BASE_PROMPT = """# Role
-
-You are a personal assistant. You have access to the user's own context and memory so you can give relevant, personalized help.
-
-# Current information
-
-- **Date:** {{DATE}}
-- **Day of Week:** {{DAY}}
-- **Time of Day:** {{TIME}}
-- **User's name:** {{USER_NAME}}
-
-# How context is provided
-
-You will receive the following sections below when they are present. Use them to tailor your responses.
-
-- **Rules** (header: `## Rules`): Optional rules the user wants you to follow. If present, follow them.
-- **Context** (header: `## Context: ...`): Longer, human-selected context about the user—written by the user (e.g. background, preferences, situation). One subsection per selected context file.
-- **Relevant memory** (header: `## Relevant memory`): Shorter facts retrieved from LLM-saved memory (RAG). These are brief stored facts that may be relevant to the current message; use them when they apply.
-
-Respond using the above when relevant. When no section is provided for a category, you do not have that information."""
+from backend.services.prompt_loader import load_prompt
 
 
 def _read_base_system_prompt():
-    """Read base system prompt from data folder; substitute {{DATE}}, {{DAY}}, {{TIME}}, {{USER_NAME}}. Use default if file missing."""
-    if config.SYSTEM_PROMPT_PATH.exists():
-        text = config.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
-    else:
-        config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        config.SYSTEM_PROMPT_PATH.write_text(_DEFAULT_BASE_PROMPT, encoding="utf-8")
-        text = _DEFAULT_BASE_PROMPT
+    """Read base system prompt from prompts/system.md; substitute {{DATE}}, {{DAY}}, {{TIME}}, {{USER_NAME}}."""
+    text = load_prompt("system")
+    if not text:
+        text = "# Role\n\nYou are a personal assistant. Use the Rules, Context, and Relevant memory sections below when provided."
     now = datetime.now()
     today = now.strftime("%A, %B %d, %Y")
     day_of_week = now.strftime("%A")
