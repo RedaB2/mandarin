@@ -60,3 +60,25 @@ def get_memory_extractor_model_id():
     if model_id and get_model_info(model_id):
         return model_id
     return None
+
+
+def get_default_model_id():
+    """Return the default model id from models.yaml, or None."""
+    data = _load_yaml()
+    return (data.get("default") or "").strip() or None
+
+
+def set_default_model(model_id):
+    """Update the default model in models.yaml. model_id must match an id in the config (or None to clear)."""
+    model_id = (model_id or "").strip() or None
+    data = _load_yaml()
+    if model_id is not None:
+        valid_ids = set()
+        for provider in _PROVIDERS:
+            for entry in data.get(provider, []):
+                valid_ids.add(entry.get("id", ""))
+        if model_id not in valid_ids:
+            raise ValueError(f"Unknown model id: {model_id}")
+    data["default"] = model_id
+    with open(_CONFIG_PATH, "w") as f:
+        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False, allow_unicode=True)

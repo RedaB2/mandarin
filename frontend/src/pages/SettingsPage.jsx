@@ -5,6 +5,7 @@ const PROVIDER_LABELS = {
   openai: "OpenAI (GPT)",
   anthropic: "Anthropic (Claude)",
   google: "Google (Gemini)",
+  tavily: "Tavily (Web Search)",
 };
 
 export default function SettingsPage() {
@@ -15,8 +16,8 @@ export default function SettingsPage() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [defaultModel, setDefaultModel] = useState("");
-  const [apiKeyDrafts, setApiKeyDrafts] = useState({ openai: "", anthropic: "", google: "" });
-  const [showKeyInput, setShowKeyInput] = useState({ openai: false, anthropic: false, google: false });
+  const [apiKeyDrafts, setApiKeyDrafts] = useState({ openai: "", anthropic: "", google: "", tavily: "" });
+  const [showKeyInput, setShowKeyInput] = useState({ openai: false, anthropic: false, google: false, tavily: false });
 
   useEffect(() => {
     Promise.all([getSettings(), getModels()])
@@ -150,7 +151,7 @@ export default function SettingsPage() {
             <span className="settings-hint">Stored locally. Keys from .env take precedence.</span>
           </div>
           <div className="settings-api-key-list">
-            {["openai", "anthropic", "google"].map((provider) => {
+            {["openai", "anthropic", "google", "tavily"].map((provider) => {
               const keyInfo = settings?.api_keys?.[provider] || {};
               const isSet = keyInfo.set;
               const showInput = showKeyInput[provider];

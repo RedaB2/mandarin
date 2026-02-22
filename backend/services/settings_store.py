@@ -11,6 +11,7 @@ _PROVIDER_ENV_KEYS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "google": "GOOGLE_API_KEY",
+    "tavily": "TAVILY_API_KEY",
 }
 
 _PROVIDER_ENV_FALLBACK = {
@@ -52,12 +53,6 @@ def get_api_key(provider):
     return (keys.get(provider) or "").strip()
 
 
-def get_default_model():
-    """Return saved default model id, or None."""
-    data = _load_raw()
-    return (data.get("default_model") or "").strip() or None
-
-
 def mask_key(key):
     """Return masked representation (••••••••last4). Never expose full keys."""
     if not key or not isinstance(key, str) or len(key) < 4:
@@ -66,31 +61,26 @@ def mask_key(key):
 
 
 def get_settings_for_api():
-    """Return settings safe for API response: default_model and masked API key status."""
+    """Return settings safe for API response: masked API key status. default_model comes from models.yaml via API layer."""
     effective = {}
-    for p in ("openai", "anthropic", "google"):
+    for p in ("openai", "anthropic", "google", "tavily"):
         k = get_api_key(p)
         effective[p] = {
             "set": bool(k),
             "masked": mask_key(k),
         }
-    return {
-        "default_model": get_default_model(),
-        "api_keys": effective,
-    }
+    return {"api_keys": effective}
 
 
 def update_settings(updates):
-    """Update settings. updates: { default_model?, api_keys? }."""
+    """Update settings. updates: { api_keys? }. default_model is managed in models.yaml via API layer."""
     data = _load_raw()
-    if "default_model" in updates:
-        data["default_model"] = (updates["default_model"] or "").strip() or None
     if "api_keys" in updates:
         new_keys = updates["api_keys"]
         if isinstance(new_keys, dict):
             current = data.get("api_keys") or {}
             for k, v in new_keys.items():
-                if k in ("openai", "anthropic", "google") and v is not None:
+                if k in ("openai", "anthropic", "google", "tavily") and v is not None:
                     v = str(v).strip()
                     if v:
                         current[k] = v

@@ -59,6 +59,12 @@ export default function ChatPage() {
   const contextDropdownRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
+  const streamingChatIdRef = useRef(null);
+  const streamAbortControllerRef = useRef(null);
+  const currentChatIdRef = useRef(currentChat?.id ?? null);
+  useEffect(() => {
+    currentChatIdRef.current = currentChat?.id ?? null;
+  }, [currentChat?.id]);
 
   useEffect(() => {
     Promise.all([getChats(), getModels(), getContexts(), getRules(), getCommands(), getSettings()])
@@ -123,8 +129,8 @@ export default function ChatPage() {
       setMessages([]);
       return;
     }
-    /* Don't overwrite messages while streaming: we have temp-assistant in state for "Thinking…" and chunk updates */
-    if (sending) return;
+    /* Only skip loading when the selected chat is the one currently streaming and we're still sending */
+    if (sending && currentChat?.id === streamingChatIdRef.current) return;
     getChat(currentChat.id)
       .then((data) => setMessages(data.messages || []))
       .catch((e) => setError(e.message));
@@ -195,6 +201,11 @@ export default function ChatPage() {
         setMessages(updatedMessages);
         if (isUserMessage) {
           // Regenerate response for the edited user message
+          const chatIdForStream = currentChat.id;
+          streamingChatIdRef.current = chatIdForStream;
+          const controller = new AbortController();
+          streamAbortControllerRef.current = controller;
+
           setSending(true);
           setError(null);
           setStreamingContent("");
@@ -202,45 +213,71 @@ export default function ChatPage() {
           setMessages([...updatedMessages, placeholderAssistant]);
           setStreamingStatus("Regenerating...");
           regenerateMessageStream(currentChat.id, Number(editingMessageId), selectedModel, {
+            signal: controller.signal,
             onChunk: (c) => setStreamingContent((prev) => prev + c),
             onStatus: (msg) => setStreamingStatus(msg),
-            onDone: (fullContent, payload) => {
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === "temp-assistant" ? { ...m, content: fullContent, id: payload?.id ?? m.id } : m
-                )
-              );
+            onCancel: () => {
+              setMessages((prev) => prev.filter((m) => m.id !== "temp-assistant"));
               setStreamingContent("");
               setStreamingStatus(null);
               setSending(false);
-              const chatId = currentChat.id;
+              streamingChatIdRef.current = null;
+              streamAbortControllerRef.current = null;
+            },
+            onDone: (fullContent, payload) => {
+              setStreamingContent("");
+              setStreamingStatus(null);
+              streamingChatIdRef.current = null;
+              streamAbortControllerRef.current = null;
               const titleFromPayload = payload?.title;
-              if (titleFromPayload != null) {
-                setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, title: titleFromPayload } : c)));
-                setCurrentChat((prev) => prev && prev.id === chatId ? { ...prev, title: titleFromPayload } : prev);
-              }
-              getChat(chatId).then((d) => setMessages(d.messages || []));
-              getChats().then((chatList) => {
-                setChats(
-                  chatList.map((c) =>
-                    c.id === chatId && titleFromPayload != null ? { ...c, title: titleFromPayload } : c
+              if (currentChatIdRef.current === chatIdForStream) {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === "temp-assistant" ? { ...m, content: fullContent, id: payload?.id ?? m.id } : m
                   )
                 );
-                const updated = chatList.find((c) => c.id === currentChat.id);
-                if (updated) {
-                  setCurrentChat(titleFromPayload != null ? { ...updated, title: titleFromPayload } : updated);
-                } else {
-                  setCurrentChat(null);
-                  setMessages([]);
+                setSending(false);
+                if (titleFromPayload != null) {
+                  setChats((prev) => prev.map((c) => (c.id === chatIdForStream ? { ...c, title: titleFromPayload } : c)));
+                  setCurrentChat((prev) => prev && prev.id === chatIdForStream ? { ...prev, title: titleFromPayload } : prev);
                 }
-              });
+                getChat(chatIdForStream).then((d) => setMessages(d.messages || []));
+                getChats().then((chatList) => {
+                  setChats(
+                    chatList.map((c) =>
+                      c.id === chatIdForStream && titleFromPayload != null ? { ...c, title: titleFromPayload } : c
+                    )
+                  );
+                  const viewingId = currentChatIdRef.current;
+                  const updated = chatList.find((c) => c.id === viewingId);
+                  if (updated) {
+                    setCurrentChat(viewingId === chatIdForStream && titleFromPayload != null ? { ...updated, title: titleFromPayload } : updated);
+                  } else if (!chatList.some((c) => c.id === viewingId)) {
+                    setCurrentChat(null);
+                    setMessages([]);
+                  }
+                });
+              } else {
+                setSending(false);
+                getChat(chatIdForStream).then((data) => {
+                  setChats((prev) => prev.map((c) => (c.id === chatIdForStream ? { ...c, title: data.title ?? c.title } : c)));
+                }).catch(() => {});
+              }
             },
           }).catch((e) => {
+            if (e?.name === "AbortError") {
+              setMessages((prev) => prev.filter((m) => m.id !== "temp-assistant"));
+              setStreamingContent("");
+              setStreamingStatus(null);
+              setSending(false);
+              streamingChatIdRef.current = null;
+              streamAbortControllerRef.current = null;
+              return;
+            }
             setError(e.message);
             setSending(false);
             setStreamingContent("");
             setStreamingStatus(null);
-            // Remove placeholder on error
             setMessages((prev) => prev.filter((m) => m.id !== "temp-assistant"));
           });
         }
@@ -250,6 +287,109 @@ export default function ChatPage() {
 
   const copyMessage = (msg) => {
     navigator.clipboard.writeText(msg.content || "").then(() => setMenuOpenForMessageId(null)).catch(() => setError("Copy failed"));
+  };
+
+  const handleResendMessage = (m, msgIndex) => {
+    if (!currentChat || !selectedModel || sending || m.role !== "user") return;
+    if (!isPersistedMessage(m) || m.id == null) return;
+    setMenuOpenForMessageId(null);
+
+    const chatIdForStream = currentChat.id;
+    streamingChatIdRef.current = chatIdForStream;
+    const controller = new AbortController();
+    streamAbortControllerRef.current = controller;
+
+    const nextMsg = messages[msgIndex + 1];
+    const hasFollowingAssistant = nextMsg && nextMsg.role === "assistant";
+
+    const startRegenerate = (baseMessages) => {
+      const placeholderAssistant = { id: "temp-assistant", role: "assistant", content: "" };
+      setMessages([...baseMessages, placeholderAssistant]);
+      setStreamingStatus("Regenerating...");
+      setSending(true);
+      setError(null);
+      setStreamingContent("");
+      regenerateMessageStream(chatIdForStream, Number(m.id), selectedModel, {
+        signal: controller.signal,
+        onChunk: (c) => setStreamingContent((prev) => prev + c),
+        onStatus: (msg) => setStreamingStatus(msg),
+        onCancel: () => {
+          setMessages((prev) => prev.filter((x) => x.id !== "temp-assistant"));
+          setStreamingContent("");
+          setStreamingStatus(null);
+          setSending(false);
+          streamingChatIdRef.current = null;
+          streamAbortControllerRef.current = null;
+        },
+        onDone: (fullContent, payload) => {
+          setStreamingContent("");
+          setStreamingStatus(null);
+          streamingChatIdRef.current = null;
+          streamAbortControllerRef.current = null;
+          const titleFromPayload = payload?.title;
+          const stillViewingStreamingChat = currentChatIdRef.current === chatIdForStream;
+          if (stillViewingStreamingChat) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === "temp-assistant" ? { ...msg, content: fullContent, id: payload?.id ?? msg.id } : msg
+              )
+            );
+            setStreamingContent("");
+            setSending(false);
+            if (titleFromPayload != null) {
+              setChats((prev) => prev.map((c) => (c.id === chatIdForStream ? { ...c, title: titleFromPayload } : c)));
+              setCurrentChat((prev) => prev && prev.id === chatIdForStream ? { ...prev, title: titleFromPayload } : prev);
+            }
+            getChat(chatIdForStream).then((d) => setMessages(d.messages || []));
+            getChats().then((chatList) => {
+              setChats((prev) =>
+                prev.map((c) => (c.id === chatIdForStream && titleFromPayload != null ? { ...c, title: titleFromPayload } : c))
+              );
+              const viewingId = currentChatIdRef.current;
+              const updated = chatList.find((c) => c.id === viewingId);
+              if (updated) setCurrentChat(viewingId === chatIdForStream && titleFromPayload != null ? { ...updated, title: titleFromPayload } : updated);
+              else if (!chatList.some((c) => c.id === viewingId)) {
+                setCurrentChat(null);
+                setMessages([]);
+              }
+            });
+          } else {
+            setSending(false);
+            setStreamingContent("");
+            getChat(chatIdForStream).then((data) => {
+              setChats((prev) => prev.map((c) => (c.id === chatIdForStream ? { ...c, title: data.title ?? c.title } : c)));
+            }).catch(() => {});
+          }
+        },
+      }).catch((e) => {
+        if (e?.name === "AbortError") {
+          setMessages((prev) => prev.filter((x) => x.id !== "temp-assistant"));
+          setStreamingContent("");
+          setStreamingStatus(null);
+          setSending(false);
+          streamingChatIdRef.current = null;
+          streamAbortControllerRef.current = null;
+          return;
+        }
+        setError(e.message);
+        setSending(false);
+        setStreamingStatus(null);
+        setStreamingContent("");
+        setMessages((prev) => prev.filter((x) => x.id !== "temp-assistant"));
+        streamingChatIdRef.current = null;
+        streamAbortControllerRef.current = null;
+      });
+    };
+
+    if (hasFollowingAssistant) {
+      patchMessage(currentChat.id, m.id, m.content)
+        .then((truncated) => {
+          startRegenerate(truncated);
+        })
+        .catch((e) => setError(e.message));
+    } else {
+      startRegenerate(messages);
+    }
   };
 
   const startRenameChat = (chat) => {
@@ -280,48 +420,80 @@ export default function ChatPage() {
     setSending(true);
     setError(null);
     setStreamingContent("");
+    const chatIdForStream = currentChat.id;
+    streamingChatIdRef.current = chatIdForStream;
+    const controller = new AbortController();
+    streamAbortControllerRef.current = controller;
+
     patchMessage(currentChat.id, Number(userMsg.id), userMsg.content)
       .then((truncated) => {
         const placeholderAssistant = { id: "temp-assistant", role: "assistant", content: "" };
         setMessages([...truncated, placeholderAssistant]);
         setStreamingStatus("Regenerating...");
         return regenerateMessageStream(currentChat.id, userMsg.id, selectedModel, {
+          signal: controller.signal,
           onChunk: (c) => setStreamingContent((prev) => prev + c),
           onStatus: (msg) => setStreamingStatus(msg),
-          onDone: (fullContent, payload) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === "temp-assistant" ? { ...m, content: fullContent, id: payload?.id ?? m.id } : m
-              )
-            );
+          onCancel: () => {
+            setMessages((prev) => prev.filter((m) => m.id !== "temp-assistant"));
             setStreamingContent("");
             setStreamingStatus(null);
             setSending(false);
-            const chatId = currentChat.id;
+            streamingChatIdRef.current = null;
+            streamAbortControllerRef.current = null;
+          },
+          onDone: (fullContent, payload) => {
+            setStreamingContent("");
+            setStreamingStatus(null);
+            streamingChatIdRef.current = null;
+            streamAbortControllerRef.current = null;
             const titleFromPayload = payload?.title;
-            if (titleFromPayload != null) {
-              setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, title: titleFromPayload } : c)));
-              setCurrentChat((prev) => prev && prev.id === chatId ? { ...prev, title: titleFromPayload } : prev);
-            }
-            getChat(chatId).then((d) => setMessages(d.messages || []));
-            getChats().then((chatList) => {
-              setChats(
-                chatList.map((c) =>
-                  c.id === chatId && titleFromPayload != null ? { ...c, title: titleFromPayload } : c
+            if (currentChatIdRef.current === chatIdForStream) {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === "temp-assistant" ? { ...m, content: fullContent, id: payload?.id ?? m.id } : m
                 )
               );
-              const updated = chatList.find((c) => c.id === currentChat.id);
-              if (updated) {
-                setCurrentChat(titleFromPayload != null ? { ...updated, title: titleFromPayload } : updated);
-              } else {
-                setCurrentChat(null);
-                setMessages([]);
+              setSending(false);
+              if (titleFromPayload != null) {
+                setChats((prev) => prev.map((c) => (c.id === chatIdForStream ? { ...c, title: titleFromPayload } : c)));
+                setCurrentChat((prev) => prev && prev.id === chatIdForStream ? { ...prev, title: titleFromPayload } : prev);
               }
-            });
+              getChat(chatIdForStream).then((d) => setMessages(d.messages || []));
+              getChats().then((chatList) => {
+                setChats(
+                  chatList.map((c) =>
+                    c.id === chatIdForStream && titleFromPayload != null ? { ...c, title: titleFromPayload } : c
+                  )
+                );
+                const viewingId = currentChatIdRef.current;
+                const updated = chatList.find((c) => c.id === viewingId);
+                if (updated) {
+                  setCurrentChat(viewingId === chatIdForStream && titleFromPayload != null ? { ...updated, title: titleFromPayload } : updated);
+                } else if (!chatList.some((c) => c.id === viewingId)) {
+                  setCurrentChat(null);
+                  setMessages([]);
+                }
+              });
+            } else {
+              setSending(false);
+              getChat(chatIdForStream).then((data) => {
+                setChats((prev) => prev.map((c) => (c.id === chatIdForStream ? { ...c, title: data.title ?? c.title } : c)));
+              }).catch(() => {});
+            }
           },
         });
       })
       .catch((e) => {
+        if (e?.name === "AbortError") {
+          setMessages((prev) => prev.filter((m) => m.id !== "temp-assistant"));
+          setStreamingContent("");
+          setStreamingStatus(null);
+          setSending(false);
+          streamingChatIdRef.current = null;
+          streamAbortControllerRef.current = null;
+          return;
+        }
         setError(e.message);
         setSending(false);
         setStreamingStatus(null);
@@ -366,41 +538,74 @@ export default function ChatPage() {
     if (!currentChat) {
       createChat({ context_ids: pendingContextIds, web_search_enabled: pendingWebSearchEnabled })
         .then((chat) => {
+          const chatIdForStream = chat.id;
+          streamingChatIdRef.current = chatIdForStream;
+          const controller = new AbortController();
+          streamAbortControllerRef.current = controller;
+
           setChats((prev) => [chat, ...prev]);
           setCurrentChat(chat);
           setMessages([userMsg, placeholderAssistant]);
           setStreamingStatus(content.trim().startsWith("/") ? "Completing task..." : "Thinking...");
           return addMessageStream(chat.id, content, selectedModel, {
             attachments: attachmentsToSend,
+            signal: controller.signal,
             onChunk: (c) => setStreamingContent((prev) => prev + c),
             onStatus: (msg) => setStreamingStatus(msg),
+            onCancel: () => {
+              setMessages((prev) => prev.filter((m) => m.id !== "temp-assistant"));
+              setStreamingContent("");
+              setStreamingStatus(null);
+              setSending(false);
+              streamingChatIdRef.current = null;
+              streamAbortControllerRef.current = null;
+            },
             onDone: (fullContent, payload) => {
               setStreamingStatus(null);
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === "temp-assistant" ? { ...m, content: fullContent, id: payload?.id ?? m.id } : m
-                )
-              );
-              setStreamingContent("");
-              setSending(false);
-              const chatId = chat.id;
+              streamingChatIdRef.current = null;
+              streamAbortControllerRef.current = null;
               const titleFromPayload = payload?.title;
-              if (titleFromPayload != null) {
-                setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, title: titleFromPayload } : c)));
-                setCurrentChat((prev) => prev && prev.id === chatId ? { ...prev, title: titleFromPayload } : prev);
-              }
-              getChat(chatId).then((d) => setMessages(d.messages || []));
-              getChats().then((chatList) => {
-                setChats((prev) =>
-                  prev.map((c) => (c.id === chatId && titleFromPayload != null ? { ...c, title: titleFromPayload } : c))
+              if (currentChatIdRef.current === chatIdForStream) {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === "temp-assistant" ? { ...m, content: fullContent, id: payload?.id ?? m.id } : m
+                  )
                 );
-                const updated = chatList.find((c) => c.id === chatId);
-                if (updated) setCurrentChat(titleFromPayload != null ? { ...updated, title: titleFromPayload } : updated);
-              });
+                setStreamingContent("");
+                setSending(false);
+                if (titleFromPayload != null) {
+                  setChats((prev) => prev.map((c) => (c.id === chatIdForStream ? { ...c, title: titleFromPayload } : c)));
+                  setCurrentChat((prev) => prev && prev.id === chatIdForStream ? { ...prev, title: titleFromPayload } : prev);
+                }
+                getChat(chatIdForStream).then((d) => setMessages(d.messages || []));
+                getChats().then((chatList) => {
+                  setChats((prev) =>
+                    prev.map((c) => (c.id === chatIdForStream && titleFromPayload != null ? { ...c, title: titleFromPayload } : c))
+                  );
+                  const viewingId = currentChatIdRef.current;
+                  const updated = chatList.find((c) => c.id === viewingId);
+                  if (updated) setCurrentChat(viewingId === chatIdForStream && titleFromPayload != null ? { ...updated, title: titleFromPayload } : updated);
+                });
+              } else {
+                setSending(false);
+                setStreamingContent("");
+                getChat(chatIdForStream).then((data) => {
+                  setChats((prev) => prev.map((c) => (c.id === chatIdForStream ? { ...c, title: data.title ?? c.title } : c)));
+                }).catch(() => {});
+              }
             },
           });
         })
         .catch((e) => {
+          if (e?.name === "AbortError") {
+            setMessages((prev) => prev.filter((m) => m.id !== "temp-assistant"));
+            setStreamingContent("");
+            setStreamingStatus(null);
+            setSending(false);
+            streamingChatIdRef.current = null;
+            streamAbortControllerRef.current = null;
+            return;
+          }
           setError(e.message);
           setSending(false);
           setStreamingStatus(null);
@@ -408,46 +613,75 @@ export default function ChatPage() {
       return;
     }
 
+    const chatIdForStream = currentChat.id;
+    streamingChatIdRef.current = chatIdForStream;
+    const controller = new AbortController();
+    streamAbortControllerRef.current = controller;
+
     setMessages((prev) => [...prev, userMsg, placeholderAssistant]);
     setStreamingStatus(content.trim().startsWith("/") ? "Completing task..." : "Thinking...");
-    addMessageStream(currentChat.id, content, selectedModel, {
+    addMessageStream(chatIdForStream, content, selectedModel, {
       attachments: attachmentsToSend,
+      signal: controller.signal,
       onChunk: (c) => setStreamingContent((prev) => prev + c),
       onStatus: (msg) => setStreamingStatus(msg),
+      onCancel: () => {
+        setMessages((prev) => prev.filter((m) => m.id !== "temp-assistant"));
+        setStreamingContent("");
+        setStreamingStatus(null);
+        setSending(false);
+        streamingChatIdRef.current = null;
+        streamAbortControllerRef.current = null;
+      },
       onDone: (fullContent, payload) => {
         setStreamingStatus(null);
-        const chatId = currentChat.id;
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === "temp-assistant" ? { ...m, content: fullContent, id: payload?.id ?? m.id } : m
-          )
-        );
-        setStreamingContent("");
-        setSending(false);
+        streamingChatIdRef.current = null;
+        streamAbortControllerRef.current = null;
         const titleFromPayload = payload?.title;
-        if (titleFromPayload != null) {
-          setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, title: titleFromPayload } : c)));
-          setCurrentChat((prev) => prev && prev.id === chatId ? { ...prev, title: titleFromPayload } : prev);
-        }
-        getChat(chatId).then((d) => setMessages(d.messages || []));
-        getChats().then((chatList) => {
-          setChats((prev) => {
-            const next = chatList.map((c) => {
-              if (c.id === chatId && titleFromPayload != null) return { ...c, title: titleFromPayload };
-              return c;
-            });
-            return next;
-          });
-          if (currentChat && chatList.some((c) => c.id === currentChat.id)) {
-            const updated = chatList.find((c) => c.id === currentChat.id);
-            setCurrentChat(titleFromPayload != null ? { ...updated, title: titleFromPayload } : updated);
-          } else if (currentChat && !chatList.some((c) => c.id === currentChat.id)) {
-            setCurrentChat(null);
-            setMessages([]);
+        const stillViewingStreamingChat = currentChatIdRef.current === chatIdForStream;
+        if (stillViewingStreamingChat) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === "temp-assistant" ? { ...m, content: fullContent, id: payload?.id ?? m.id } : m
+            )
+          );
+          setStreamingContent("");
+          setSending(false);
+          if (titleFromPayload != null) {
+            setChats((prev) => prev.map((c) => (c.id === chatIdForStream ? { ...c, title: titleFromPayload } : c)));
+            setCurrentChat((prev) => prev && prev.id === chatIdForStream ? { ...prev, title: titleFromPayload } : prev);
           }
-        });
+          getChat(chatIdForStream).then((d) => setMessages(d.messages || []));
+          getChats().then((chatList) => {
+            setChats((prev) =>
+              prev.map((c) => (c.id === chatIdForStream && titleFromPayload != null ? { ...c, title: titleFromPayload } : c))
+            );
+            const viewingId = currentChatIdRef.current;
+            const updated = chatList.find((c) => c.id === viewingId);
+            if (updated) setCurrentChat(titleFromPayload != null && viewingId === chatIdForStream ? { ...updated, title: titleFromPayload } : updated);
+            else if (!chatList.some((c) => c.id === viewingId)) {
+              setCurrentChat(null);
+              setMessages([]);
+            }
+          });
+        } else {
+          setSending(false);
+          setStreamingContent("");
+          getChat(chatIdForStream).then((data) => {
+            setChats((prev) => prev.map((c) => (c.id === chatIdForStream ? { ...c, title: data.title ?? c.title } : c)));
+          }).catch(() => {});
+        }
       },
     }).catch((e) => {
+      if (e?.name === "AbortError") {
+        setMessages((prev) => prev.filter((m) => m.id !== "temp-assistant"));
+        setStreamingContent("");
+        setStreamingStatus(null);
+        setSending(false);
+        streamingChatIdRef.current = null;
+        streamAbortControllerRef.current = null;
+        return;
+      }
       setError(e.message);
       setSending(false);
       setStreamingStatus(null);
@@ -460,6 +694,8 @@ export default function ChatPage() {
         }
         return kept;
       });
+      streamingChatIdRef.current = null;
+      streamAbortControllerRef.current = null;
     });
   };
 
@@ -837,6 +1073,16 @@ export default function ChatPage() {
                                 Edit message
                               </button>
                             )}
+                            {m.role === "user" && isPersistedMessage(m) && currentChat && selectedModel && (
+                              <button
+                                type="button"
+                                className="message-actions-item"
+                                onClick={() => handleResendMessage(m, msgIndex)}
+                                role="menuitem"
+                              >
+                                Resend message
+                              </button>
+                            )}
                             {m.role === "assistant" && isPersistedMessage(m) && msgIndex > 0 && messages[msgIndex - 1]?.role === "user" && (
                               <button
                                 type="button"
@@ -974,14 +1220,26 @@ export default function ChatPage() {
               rows={2}
               disabled={sending}
             />
-            <button
-              type="button"
-              className="send-btn"
-              onClick={handleSend}
-              disabled={!inputValue.trim() || !selectedModel || sending}
-            >
-              {sending ? "..." : "Send"}
-            </button>
+            {sending ? (
+              <button
+                type="button"
+                className="send-btn send-btn--stop"
+                onClick={() => streamAbortControllerRef.current?.abort()}
+                aria-label="Stop generating"
+                title="Stop"
+              >
+                Stop
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="send-btn"
+                onClick={handleSend}
+                disabled={!inputValue.trim() || !selectedModel}
+              >
+                Send
+              </button>
+            )}
             {pickerType && (
               <div className="picker-dropdown-wrap">
                 <div className="picker-dropdown">

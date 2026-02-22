@@ -206,9 +206,9 @@ function fileToBase64(file) {
 
 /**
  * Send message and stream assistant reply. Calls onStarted() when request accepted, onChunk(text) for each chunk, onDone(fullContent, payload) when finished.
- * attachments: optional array of File objects (max 3, max 10 MB each). On 4xx, throws with message from body.error.
+ * Optional: signal (AbortSignal) to cancel; onCancel() when aborted. attachments: optional array of File objects (max 3, max 10 MB each). On 4xx, throws with message from body.error.
  */
-export async function addMessageStream(chatId, content, modelId, { onStarted, onChunk, onDone, onStatus, attachments: attachmentFiles = [] }) {
+export async function addMessageStream(chatId, content, modelId, { onStarted, onChunk, onDone, onStatus, onCancel, attachments: attachmentFiles = [], signal } = {}) {
   let body = { content, model_id: modelId };
   if (attachmentFiles.length > 0) {
     const attachments = await Promise.all(
@@ -224,6 +224,7 @@ export async function addMessageStream(chatId, content, modelId, { onStarted, on
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!r.ok) {
     const text = await r.text();
@@ -242,7 +243,17 @@ export async function addMessageStream(chatId, content, modelId, { onStarted, on
   let buffer = "";
   let fullContent = "";
   while (true) {
-    const { done, value } = await reader.read();
+    let result;
+    try {
+      result = await reader.read();
+    } catch (e) {
+      if (e?.name === "AbortError") {
+        onCancel?.();
+        throw e;
+      }
+      throw e;
+    }
+    const { done, value } = result;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n\n");
@@ -273,13 +284,14 @@ export async function addMessageStream(chatId, content, modelId, { onStarted, on
 
 /**
  * Regenerate assistant reply for an existing user message. Does not add a new user message.
- * Same callbacks as addMessageStream.
+ * Same callbacks as addMessageStream. Optional: signal, onCancel.
  */
-export async function regenerateMessageStream(chatId, userMessageId, modelId, { onStarted, onChunk, onDone, onStatus }) {
+export async function regenerateMessageStream(chatId, userMessageId, modelId, { onStarted, onChunk, onDone, onStatus, onCancel, signal } = {}) {
   const r = await fetch(`${BASE}/api/chats/${chatId}/messages/regenerate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message_id: userMessageId, model_id: modelId }),
+    signal,
   });
   if (!r.ok) {
     const text = await r.text();
@@ -298,7 +310,17 @@ export async function regenerateMessageStream(chatId, userMessageId, modelId, { 
   let buffer = "";
   let fullContent = "";
   while (true) {
-    const { done, value } = await reader.read();
+    let result;
+    try {
+      result = await reader.read();
+    } catch (e) {
+      if (e?.name === "AbortError") {
+        onCancel?.();
+        throw e;
+      }
+      throw e;
+    }
+    const { done, value } = result;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n\n");

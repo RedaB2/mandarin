@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 import config
+from backend.services.settings_store import get_api_key
 
 # ~1k tokens ≈ 4000 chars
 MAX_CONTENT_CHARS = 4000
@@ -42,13 +43,14 @@ def _truncate_content(text: str | None) -> str:
 
 def _search_tavily_once(query: str) -> list[dict[str, Any]]:
     """Call Tavily API once. Returns list of {title, url, snippet, content}."""
-    if not config.TAVILY_API_KEY:
+    key = (config.TAVILY_API_KEY or "").strip() or get_api_key("tavily")
+    if not key:
         return []
     try:
         from tavily import TavilyClient
     except ImportError:
         return []
-    client = TavilyClient(api_key=config.TAVILY_API_KEY)
+    client = TavilyClient(api_key=key)
     max_results = getattr(config, "TAVILY_MAX_RESULTS", 5)
     response = client.search(query=query, max_results=max_results)
     raw = response.get("results", []) if isinstance(response, dict) else getattr(response, "results", [])
