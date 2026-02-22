@@ -47,3 +47,21 @@ def get_model_info(model_id):
         if m["id"] == model_id:
             return {"provider": m["provider"], "model": m["model"]} if m["available"] else None
     return None
+
+
+def get_chat_namer_model_id():
+    """Return model id for chat title generation, or None if not configured or unavailable."""
+    data = _load_yaml()
+    model_id = (data.get("chat_namer") or "").strip() or None
+    if not model_id or not get_model_info(model_id):
+        return None
+    return model_id
+
+
+def get_memory_extractor_model_id():
+    """Return model id for memory extraction, or None if not configured or unavailable."""
+    data = _load_yaml()
+    model_id = (data.get("memory_extractor") or "").strip() or None
+    if model_id and get_model_info(model_id):
+        return model_id
+    return None

@@ -1088,6 +1088,80 @@ html, body {
   opacity: 0.6;
   cursor: not-allowed;
 }
+.input-file-hidden {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.attach-btn {
+  flex-shrink: 0;
+  padding: 0.75rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+.attach-btn:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--accent);
+}
+.attach-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.input-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+.input-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85rem;
+  background: var(--accent-subtle);
+  border-radius: 6px;
+  color: var(--text-primary);
+}
+.input-attachment-remove {
+  padding: 0 0.2rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--text-muted);
+}
+.input-attachment-remove:hover {
+  color: var(--text-primary);
+}
+.message-attachments {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.message-attachment {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.message-attachment-img {
+  max-width: 200px;
+  max-height: 150px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+.message-attachment-name {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
 
 /* Picker dropdown (commands / rules) */
 .picker-dropdown-wrap {

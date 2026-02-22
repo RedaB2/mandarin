@@ -25,15 +25,37 @@ def _split_system(messages):
     return "\n".join(system_parts).strip(), rest
 
 
+def _parse_data_url(url: str):
+    """Parse data URL (data:image/png;base64,...) -> (media_type, base64_data). Returns (None, None) on failure."""
+    if not url or not url.startswith("data:"):
+        return None, None
+    rest = url[5:].strip()
+    if ";base64," in rest:
+        media_type, b64 = rest.split(";base64,", 1)
+        return media_type.strip().lower() or "image/png", b64
+    return None, None
+
+
 def _to_anthropic_content(m):
-    """Convert message to Anthropic content (string or list of blocks)."""
+    """Convert message to Anthropic content (string or list of blocks). Maps image_url parts to Anthropic image blocks."""
     if m.get("role") == "tool":
         return m.get("content") or ""
     if m.get("role") == "assistant" and m.get("tool_blocks"):
         return m["tool_blocks"]
     c = m.get("content") or ""
     if isinstance(c, list):
-        return c
+        blocks = []
+        for part in c:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                blocks.append({"type": "text", "text": part.get("text", "")})
+            elif part.get("type") == "image_url":
+                url = (part.get("image_url") or {}).get("url") or ""
+                media_type, b64 = _parse_data_url(url)
+                if media_type and b64:
+                    blocks.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}})
+        return blocks if blocks else ""
     return c
 
 
@@ -131,5 +153,10 @@ def generate_with_tools(messages, model, tools, tool_runner):
             current.append({"role": "user", "content": tool_results})
             continue
         final = "".join(text_parts).strip()
+        if final:
+            # Stream the final response in chunks
+            chunk_size = 50
+            for i in range(0, len(final), chunk_size):
+                yield ("chunk", final[i:i + chunk_size])
         yield ("result", (final, web_search_meta))
         return

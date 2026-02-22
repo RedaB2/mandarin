@@ -1,4 +1,5 @@
 """API blueprint: chats, models, streaming, contexts, memory."""
+import base64
 import re
 import json
 import threading
@@ -8,7 +9,10 @@ from pathlib import Path
 import yaml
 from flask import Blueprint, request, jsonify, Response, stream_with_context, current_app
 
+import config
 from backend.models import db, Chat, Message, Memory
+from backend.services.message_content import message_to_llm_content
+from backend.services.file_extraction import extract_attachments
 from backend.services.prompt_builder import (
     Rule,
     Command,
@@ -20,8 +24,8 @@ from backend.services.prompt_builder import (
     resolve_active_rules,
 )
 from backend.services.prompt_builder import _context_name_from_first_line
-from backend.services.models_config import get_models_list, get_model_info
-import config
+from backend.services.prompt_loader import load_prompt
+from backend.services.models_config import get_models_list, get_model_info, get_chat_namer_model_id
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -388,10 +392,29 @@ def delete_chat(chat_id):
 
 def _stream_content_chunked(content, chunk_size=50):
     """Yield SSE chunk events for content in small pieces so the UI can display progressively."""
+    import time
     if not content:
         return
     for i in range(0, len(content), chunk_size):
         yield f"data: {json.dumps({'t': 'chunk', 'c': content[i:i + chunk_size]})}\n\n"
+        # Small delay to simulate natural streaming (prevents all chunks arriving at once)
+        time.sleep(0.01)
+
+
+def _stream_provider_chunks(provider_gen, chunk_size=50):
+    """Stream from provider generator, re-chunking into smaller pieces for smoother UI updates.
+    Yields (sse_event, chunk_text) tuples so caller can accumulate full_content."""
+    buffer = ""
+    for chunk in provider_gen:
+        buffer += chunk
+        # Yield accumulated buffer in small chunks
+        while len(buffer) >= chunk_size:
+            piece = buffer[:chunk_size]
+            buffer = buffer[chunk_size:]
+            yield (f"data: {json.dumps({'t': 'chunk', 'c': piece})}\n\n", piece)
+    # Yield remaining buffer
+    if buffer:
+        yield (f"data: {json.dumps({'t': 'chunk', 'c': buffer})}\n\n", buffer)
 
 
 def _title_fallback(first_user_content):
@@ -401,17 +424,18 @@ def _title_fallback(first_user_content):
 
 
 def _generate_title(first_user_content):
-    """Use GPT-5 Nano (cheapest) to generate a short title from first ~100 chars. Sync."""
+    """Generate a short title from first ~100 chars using the chat_namer model from models.yaml."""
     from backend.providers import base as providers_base
+    model_id = get_chat_namer_model_id()
+    if not model_id:
+        return _title_fallback(first_user_content)
     snippet = (first_user_content or "")[:100]
-    messages = [
-        {"role": "user", "content": f"Generate an extremely short chat title: 2–4 words max, no punctuation. Reply with only the title, nothing else.\n\n{snippet}"}
-    ]
+    title_prompt = load_prompt("chat_title")
+    if not title_prompt:
+        title_prompt = "Generate an extremely short chat title: 2–4 words max, no punctuation. Reply with only the title, nothing else.\n\n{{SNIPPET}}"
+    content = title_prompt.replace("{{SNIPPET}}", snippet)
+    messages = [{"role": "user", "content": content}]
     try:
-        model_id = "openai/gpt-5-nano-2025-08-07"
-        info = get_model_info(model_id)
-        if not info:
-            return _title_fallback(first_user_content)
         title_parts = list(providers_base.generate(messages, model_id, stream=True))
         title = "".join(title_parts).strip() or _title_fallback(first_user_content)
         return (title[:80] if title else _title_fallback(first_user_content))
@@ -468,9 +492,15 @@ def regenerate_message(chat_id):
         if m.role not in ("user", "assistant"):
             continue
         if m.id == user_msg.id:
-            messages_for_llm.append({"role": "user", "content": user_content_for_llm})
+            content = message_to_llm_content(user_msg)
+            if cmd_body:
+                if isinstance(content, list):
+                    content = [{"type": "text", "text": user_content_for_llm}] + content[1:]
+                else:
+                    content = user_content_for_llm
+            messages_for_llm.append({"role": "user", "content": content})
             break
-        messages_for_llm.append({"role": m.role, "content": m.content})
+        messages_for_llm.append({"role": m.role, "content": message_to_llm_content(m) if m.role == "user" else m.content})
 
     def stream():
         from backend.providers import base as providers_base
@@ -500,15 +530,16 @@ def regenerate_message(chat_id):
                 print("\n" + "=" * 60 + " LLM PROMPT (regenerate) " + "=" * 60)
                 for msg in messages_for_llm:
                     role = msg.get("role", "")
-                    content_preview = (msg.get("content") or "")[:2000]
-                    if len(msg.get("content") or "") > 2000:
+                    c = msg.get("content")
+                    content_preview = (c[:2000] if isinstance(c, str) else "[multimodal]")
+                    if isinstance(c, str) and len(c) > 2000:
                         content_preview += "\n... [truncated]"
                     print(f"\n--- {role.upper()} ---\n{content_preview}")
                 print("=" * 60 + "\n")
                 buffer = []
-                for chunk in providers_base.generate(messages_for_llm, model_id, stream=True):
-                    buffer.append(chunk)
-                    yield f"data: {json.dumps({'t': 'chunk', 'c': chunk})}\n\n"
+                for sse, chunk_text in _stream_provider_chunks(providers_base.generate(messages_for_llm, model_id, stream=True)):
+                    buffer.append(chunk_text)
+                    yield sse
                 full_content = "".join(buffer)
             assistant_msg = Message(chat_id=chat_id, role="assistant", content=full_content, meta=meta)
             db.session.add(assistant_msg)
@@ -548,9 +579,35 @@ def patch_message(chat_id, message_id):
     return jsonify(out)
 
 
+def _parse_attachments_from_request(data):
+    """Parse attachments from JSON body. Returns (list of (bytes, filename, content_type), error_response_or_None)."""
+    raw = data.get("attachments")
+    if not raw or not isinstance(raw, list):
+        return [], None
+    if len(raw) > config.MAX_ATTACHMENTS_PER_MESSAGE:
+        return None, (jsonify({"error": f"Too many attachments (max {config.MAX_ATTACHMENTS_PER_MESSAGE})"}), 400)
+    files = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            return None, (jsonify({"error": "Each attachment must be { filename, content_type, data (base64) }"}), 400)
+        filename = (item.get("filename") or f"file_{i}").strip() or f"file_{i}"
+        content_type = (item.get("content_type") or item.get("contentType") or "").strip() or None
+        b64 = item.get("data")
+        if not b64:
+            return None, (jsonify({"error": f"Attachment {filename}: missing 'data' (base64)"}), 400)
+        try:
+            raw_bytes = base64.standard_b64decode(b64)
+        except Exception:
+            return None, (jsonify({"error": f"Attachment {filename}: invalid base64"}), 400)
+        if len(raw_bytes) > config.MAX_ATTACHMENT_SIZE_BYTES:
+            return None, (jsonify({"error": f"File too large: {filename} (max {config.MAX_ATTACHMENT_SIZE_BYTES} bytes)"}), 400)
+        files.append((raw_bytes, filename, content_type))
+    return files, None
+
+
 @api_bp.route("/chats/<int:chat_id>/messages", methods=["POST"])
 def add_message(chat_id):
-    """Persist user message, stream assistant reply as SSE, persist assistant. Validate /command."""
+    """Persist user message, stream assistant reply as SSE, persist assistant. Validate /command. Accept optional attachments (JSON)."""
     chat = Chat.query.get_or_404(chat_id)
     data = request.get_json() or {}
     content = (data.get("content") or "").strip()
@@ -568,8 +625,25 @@ def add_message(chat_id):
     if not get_model_info(model_id):
         return jsonify({"error": "model not available"}), 400
 
-    # Persist user message
-    user_msg = Message(chat_id=chat_id, role="user", content=content)
+    # Parse and extract attachments (if any)
+    attachments_for_db = None
+    content_parts_for_llm = None
+    files, err = _parse_attachments_from_request(data)
+    if err:
+        return err
+    if files:
+        try:
+            attachments_for_db, content_parts_for_llm = extract_attachments(files)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+    # Persist user message (with or without attachments)
+    user_msg = Message(
+        chat_id=chat_id,
+        role="user",
+        content=content,
+        attachments=attachments_for_db if attachments_for_db else None,
+    )
     db.session.add(user_msg)
     db.session.commit()
 
@@ -578,6 +652,12 @@ def add_message(chat_id):
         user_content_for_llm = f"Command instructions:\n{cmd_body}\n\nUser message: {content.split(None, 1)[1] if content.split() else content}"
     else:
         user_content_for_llm = content
+
+    # Current user turn: string or multimodal parts (user text first, then attachment parts)
+    if content_parts_for_llm:
+        current_user_content = [{"type": "text", "text": user_content_for_llm}] + content_parts_for_llm
+    else:
+        current_user_content = user_content_for_llm
 
     fallback_memories = [m.content for m in Memory.query.order_by(Memory.created_at.desc()).limit(10).all()]
     # Resolve rules based on original user content and any command body.
@@ -604,8 +684,8 @@ def add_message(chat_id):
         if m.id == user_msg.id:
             continue
         if m.role in ("user", "assistant"):
-            messages_for_llm.append({"role": m.role, "content": m.content})
-    messages_for_llm.append({"role": "user", "content": user_content_for_llm})
+            messages_for_llm.append({"role": m.role, "content": message_to_llm_content(m) if m.role == "user" else m.content})
+    messages_for_llm.append({"role": "user", "content": current_user_content})
 
     cmds = load_commands()
     cmd = cmds.get(cmd_name) if cmd_name else None
@@ -704,15 +784,16 @@ def add_message(chat_id):
                     print("\n" + "=" * 60 + " LLM PROMPT " + "=" * 60)
                     for msg in messages_for_llm:
                         role = msg.get("role", "")
-                        content_preview = (msg.get("content") or "")[:2000]
-                        if len(msg.get("content") or "") > 2000:
+                        c = msg.get("content")
+                        content_preview = (c[:2000] if isinstance(c, str) else "[multimodal]")
+                        if isinstance(c, str) and len(c) > 2000:
                             content_preview += "\n... [truncated]"
                         print(f"\n--- {role.upper()} ---\n{content_preview}")
                     print("=" * 60 + "\n")
                     buffer = []
-                    for chunk in providers_base.generate(messages_for_llm, model_id, stream=True):
-                        buffer.append(chunk)
-                        yield f"data: {json.dumps({'t': 'chunk', 'c': chunk})}\n\n"
+                    for sse, chunk_text in _stream_provider_chunks(providers_base.generate(messages_for_llm, model_id, stream=True)):
+                        buffer.append(chunk_text)
+                        yield sse
                     full_content = "".join(buffer)
 
             assistant_msg = Message(chat_id=chat_id, role="assistant", content=full_content, meta=meta)

@@ -18,6 +18,9 @@ import MarkdownContent from "../components/MarkdownContent";
 
 const MENU_GAP = 4;
 const VIEWPORT_PADDING = 8;
+const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_ATTACHMENTS = 3;
+const ALLOWED_ATTACHMENT_EXTENSIONS = [".pdf", ".docx", ".txt", ".md", ".py", ".png", ".jpg", ".jpeg", ".webp"];
 
 export default function ChatPage() {
   const [chats, setChats] = useState([]);
@@ -49,10 +52,12 @@ export default function ChatPage() {
   const [renamingChatTitle, setRenamingChatTitle] = useState("");
   const [menuOpenForChatId, setMenuOpenForChatId] = useState(null);
   const [expandedSourcesMessageIds, setExpandedSourcesMessageIds] = useState(new Set());
+  const [pendingAttachments, setPendingAttachments] = useState([]);
   const menuTriggerRef = useRef(null);
   const menuRef = useRef(null);
   const contextDropdownRef = useRef(null);
   const inputRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     Promise.all([getChats(), getModels(), getContexts(), getRules(), getCommands()])
@@ -313,15 +318,40 @@ export default function ChatPage() {
       });
   };
 
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    const ext = (name) => (name.includes(".") ? "." + name.split(".").pop().toLowerCase() : "");
+    const valid = files.filter((f) => {
+      if (f.size > MAX_ATTACHMENT_SIZE) {
+        setError(`File too large: ${f.name} (max 10 MB)`);
+        return false;
+      }
+      if (!ALLOWED_ATTACHMENT_EXTENSIONS.includes(ext(f.name))) {
+        setError(`File type not allowed: ${f.name}`);
+        return false;
+      }
+      return true;
+    });
+    setError(null);
+    setPendingAttachments((prev) => [...prev, ...valid].slice(0, MAX_ATTACHMENTS));
+  };
+
+  const removeAttachment = (index) => {
+    setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleSend = () => {
     const content = inputValue.trim();
     if (!content || !selectedModel) return;
     setSending(true);
     setError(null);
     setStreamingContent("");
-    const userMsg = { id: "temp-user", role: "user", content };
+    const userMsg = { id: "temp-user", role: "user", content, attachments: pendingAttachments.length ? pendingAttachments.map((f) => ({ type: "file", filename: f.name })) : [] };
     const placeholderAssistant = { id: "temp-assistant", role: "assistant", content: "" };
     setInputValue("");
+    const attachmentsToSend = [...pendingAttachments];
+    setPendingAttachments([]);
 
     if (!currentChat) {
       createChat({ context_ids: pendingContextIds, web_search_enabled: pendingWebSearchEnabled })
@@ -331,6 +361,7 @@ export default function ChatPage() {
           setMessages([userMsg, placeholderAssistant]);
           setStreamingStatus(content.trim().startsWith("/") ? "Completing task..." : "Thinking...");
           return addMessageStream(chat.id, content, selectedModel, {
+            attachments: attachmentsToSend,
             onChunk: (c) => setStreamingContent((prev) => prev + c),
             onStatus: (msg) => setStreamingStatus(msg),
             onDone: (fullContent, payload) => {
@@ -370,6 +401,7 @@ export default function ChatPage() {
     setMessages((prev) => [...prev, userMsg, placeholderAssistant]);
     setStreamingStatus(content.trim().startsWith("/") ? "Completing task..." : "Thinking...");
     addMessageStream(currentChat.id, content, selectedModel, {
+      attachments: attachmentsToSend,
       onChunk: (c) => setStreamingContent((prev) => prev + c),
       onStatus: (msg) => setStreamingStatus(msg),
       onDone: (fullContent, payload) => {
@@ -687,7 +719,29 @@ export default function ChatPage() {
                         <MarkdownContent key={`msg-${msgIndex}-${m.id}`} content={isStreamingThisMessage ? (streamingContent || m.content || "") : (m.content || "")} />
                       )
                     ) : (
-                      m.content
+                      <>
+                        {m.content}
+                        {m.attachments?.length > 0 && (
+                          <div className="message-attachments">
+                            {m.attachments.map((att, idx) => {
+                              const ext = (att.filename || "").includes(".") ? "." + (att.filename || "").split(".").pop().toLowerCase() : "";
+                              const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" }[ext] || "image/png";
+                              return (
+                                <div key={idx} className="message-attachment">
+                                  {att.type === "image" && att.image_data ? (
+                                    <img
+                                      src={`data:${mime};base64,${att.image_data}`}
+                                      alt={att.filename || "Image"}
+                                      className="message-attachment-img"
+                                    />
+                                  ) : null}
+                                  <span className="message-attachment-name">Attachment: {att.filename || "file"}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                   {m.role === "assistant" && m.meta?.web_search?.length > 0 && (
@@ -861,7 +915,36 @@ export default function ChatPage() {
               <span>Web search</span>
             </label>
           </div>
+          {pendingAttachments.length > 0 && (
+            <div className="input-attachments">
+              {pendingAttachments.map((file, idx) => (
+                <span key={idx} className="input-attachment-chip">
+                  {file.name}
+                  <button type="button" className="input-attachment-remove" onClick={() => removeAttachment(idx)} aria-label="Remove attachment">×</button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="input-row">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.docx,.txt,.md,.py,.png,.jpg,.jpeg,.webp"
+              multiple
+              className="input-file-hidden"
+              onChange={handleFileSelect}
+              aria-hidden
+            />
+            <button
+              type="button"
+              className="attach-btn"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={pendingAttachments.length >= MAX_ATTACHMENTS || sending}
+              title={`Attach file (max ${MAX_ATTACHMENTS}, 10 MB each). PDF, DOCX, text, images.`}
+              aria-label="Attach file"
+            >
+              📎
+            </button>
             <textarea
               ref={inputRef}
               className="message-input"

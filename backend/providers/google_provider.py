@@ -1,5 +1,6 @@
 """Google (Gemini) thin wrapper. generate(messages, model, stream=True) -> yield chunks.
 Uses the google.genai package (not the deprecated google.generativeai)."""
+import base64
 import config
 from google import genai
 from google.genai import types
@@ -36,6 +37,16 @@ def _build_contents(messages):
                 if isinstance(part, dict):
                     if part.get("type") == "text":
                         parts.append(types.Part.from_text(text=part.get("text", "")))
+                    elif part.get("type") == "image_url":
+                        url = (part.get("image_url") or {}).get("url") or ""
+                        if url.startswith("data:") and ";base64," in url:
+                            try:
+                                header, b64 = url.split(";base64,", 1)
+                                mime = header[5:].strip().lower() or "image/png"
+                                data = base64.standard_b64decode(b64)
+                                parts.append(types.Part.from_bytes(data=data, mime_type=mime))
+                            except Exception:
+                                pass
                     elif part.get("type") == "function_response":
                         parts.append(types.Part.from_function_response(
                             name=part.get("name", ""),
@@ -134,5 +145,10 @@ def generate_with_tools(messages, model, tools, tool_runner):
             current.append({"role": "user", "content": user_content})
             continue
         final = "".join(text_parts).strip()
+        if final:
+            # Stream the final response in chunks
+            chunk_size = 50
+            for i in range(0, len(final), chunk_size):
+                yield ("chunk", final[i:i + chunk_size])
         yield ("result", (final, web_search_meta))
         return

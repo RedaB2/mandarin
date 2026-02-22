@@ -37,6 +37,7 @@ class Message(db.Model):
     role = db.Column(Text, nullable=False)  # "user" | "assistant"
     content = db.Column(Text, nullable=False, default="")
     meta = db.Column(JSON, nullable=True)  # e.g. {"web_search": [{"query": "...", "results": [...]}]}
+    attachments = db.Column(JSON, nullable=True)  # list of { type, filename, extracted_text?, image_data? }
     created_at = db.Column(DateTime, default=datetime.utcnow)
 
     def to_dict(self):
@@ -46,6 +47,7 @@ class Message(db.Model):
             "role": self.role,
             "content": self.content,
             "meta": self.meta if self.meta is not None else {},
+            "attachments": self.attachments if self.attachments is not None else [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

@@ -8,7 +8,11 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # Base data directory (default ./data/)
-DATA_DIR = Path(os.environ.get("DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")))
+_DATA_ROOT = Path(__file__).resolve().parent
+DATA_DIR = Path(os.environ.get("DATA_DIR", os.path.join(_DATA_ROOT, "data")))
+
+# Built-in prompts (markdown files with placeholders); overrides live in data/
+PROMPTS_DIR = _DATA_ROOT / "prompts"
 
 def ensure_data_dirs():
     """Create data dir and subdirs if missing."""
@@ -22,7 +26,6 @@ CONTEXTS_DIR = DATA_DIR / "contexts"
 COMMANDS_DIR = DATA_DIR / "commands"
 RULES_DIR = DATA_DIR / "rules"
 RULES_PATH = DATA_DIR / "rules.md"
-SYSTEM_PROMPT_PATH = DATA_DIR / "system_prompt.md"
 DB_PATH = DATA_DIR / "app.db"
 CHROMA_DIR = DATA_DIR / "chroma"
 
@@ -38,5 +41,18 @@ TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 # Web search (Tavily)
 TAVILY_MAX_RESULTS = int(os.environ.get("TAVILY_MAX_RESULTS", "5"))
 
+# RAG: embedding model for memory indexing and retrieval (sentence-transformers model name).
+RAG_EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+
 # RAG: only include memories with similarity >= this (0–1). Chroma uses cosine distance; we use similarity = 1 - distance.
 RAG_SIMILARITY_THRESHOLD = float(os.environ.get("RAG_SIMILARITY_THRESHOLD", "0.5"))
+
+# File attachments (file-based prompting)
+MAX_ATTACHMENT_SIZE_BYTES = int(os.environ.get("MAX_ATTACHMENT_SIZE_BYTES", str(10 * 1024 * 1024)))  # 10 MB
+MAX_ATTACHMENTS_PER_MESSAGE = int(os.environ.get("MAX_ATTACHMENTS_PER_MESSAGE", "3"))
+EXTRACTED_TEXT_MAX_CHARS = int(os.environ.get("EXTRACTED_TEXT_MAX_CHARS", "60000"))
+ALLOWED_ATTACHMENT_EXTENSIONS = frozenset(
+    ext.strip().lower()
+    for ext in (os.environ.get("ALLOWED_ATTACHMENT_EXTENSIONS", ".pdf,.docx,.txt,.md,.py,.png,.jpg,.jpeg,.webp").split(","))
+    if ext.strip()
+)

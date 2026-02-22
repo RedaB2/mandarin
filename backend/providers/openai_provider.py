@@ -13,8 +13,16 @@ def _get_client():
 
 
 def _openai_messages(messages):
-    """Convert to OpenAI message format (content only, no tool_calls)."""
-    return [{"role": m["role"], "content": m.get("content") or ""} for m in messages]
+    """Convert to OpenAI message format (content only, no tool_calls). Content may be string or list of parts (multimodal)."""
+    out = []
+    for m in messages:
+        content = m.get("content")
+        if content is None:
+            content = ""
+        if m.get("role") == "system" and not content:
+            continue
+        out.append({"role": m["role"], "content": content})
+    return out
 
 
 def generate(messages, model, stream=True):
@@ -60,7 +68,9 @@ def generate_with_tools(messages, model, tools, tool_runner):
                 ]
                 api_messages.append(msg)
             else:
-                content = m.get("content") or ""
+                content = m.get("content")
+                if content is None:
+                    content = ""
                 if m.get("role") == "system" and not content:
                     continue
                 api_messages.append({"role": m["role"], "content": content})
@@ -99,7 +109,12 @@ def generate_with_tools(messages, model, tools, tool_runner):
                     web_search_meta.append(meta_entry)
                 current.append({"role": "tool", "content": content_str, "tool_call_id": tc.id})
             continue
-        # No tool calls: final text
+        # No tool calls: final text - stream it chunk by chunk
         final = (getattr(msg, "content", None) or "").strip()
+        if final:
+            # Stream the final response in chunks
+            chunk_size = 50
+            for i in range(0, len(final), chunk_size):
+                yield ("chunk", final[i:i + chunk_size])
         yield ("result", (final, web_search_meta))
         return

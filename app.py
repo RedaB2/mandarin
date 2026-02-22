@@ -31,6 +31,7 @@ with app.app_context():
             for stmt in (
                 "ALTER TABLE chats ADD COLUMN web_search_enabled BOOLEAN DEFAULT 0",
                 "ALTER TABLE messages ADD COLUMN meta JSON",
+                "ALTER TABLE messages ADD COLUMN attachments JSON",
             ):
                 try:
                     conn.execute(text(stmt))
