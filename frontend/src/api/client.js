@@ -275,7 +275,7 @@ export async function addMessageStream(chatId, content, modelId, { onStarted, on
  * Regenerate assistant reply for an existing user message. Does not add a new user message.
  * Same callbacks as addMessageStream.
  */
-export async function regenerateMessageStream(chatId, userMessageId, modelId, { onStarted, onChunk, onDone }) {
+export async function regenerateMessageStream(chatId, userMessageId, modelId, { onStarted, onChunk, onDone, onStatus }) {
   const r = await fetch(`${BASE}/api/chats/${chatId}/messages/regenerate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -308,6 +308,10 @@ export async function regenerateMessageStream(chatId, userMessageId, modelId, { 
         try {
           const obj = JSON.parse(line.slice(6));
           if (obj.t === "started") onStarted?.();
+          if (obj.t === "executing" && obj.msg) onStatus?.(obj.msg);
+          if (obj.t === "evaluating") onStatus?.("Evaluating response...");
+          if (obj.t === "retrying") onStatus?.(`Retrying (attempt ${obj.attempt || 2}/3)...`);
+          if (obj.t === "passed") onStatus?.(null);
           if (obj.t === "chunk" && obj.c) {
             fullContent += obj.c;
             onChunk(obj.c);

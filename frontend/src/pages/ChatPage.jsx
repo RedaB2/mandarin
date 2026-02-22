@@ -200,8 +200,10 @@ export default function ChatPage() {
           setStreamingContent("");
           const placeholderAssistant = { id: "temp-assistant", role: "assistant", content: "" };
           setMessages([...updatedMessages, placeholderAssistant]);
+          setStreamingStatus("Regenerating...");
           regenerateMessageStream(currentChat.id, Number(editingMessageId), selectedModel, {
             onChunk: (c) => setStreamingContent((prev) => prev + c),
+            onStatus: (msg) => setStreamingStatus(msg),
             onDone: (fullContent, payload) => {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -209,6 +211,7 @@ export default function ChatPage() {
                 )
               );
               setStreamingContent("");
+              setStreamingStatus(null);
               setSending(false);
               const chatId = currentChat.id;
               const titleFromPayload = payload?.title;
@@ -236,6 +239,7 @@ export default function ChatPage() {
             setError(e.message);
             setSending(false);
             setStreamingContent("");
+            setStreamingStatus(null);
             // Remove placeholder on error
             setMessages((prev) => prev.filter((m) => m.id !== "temp-assistant"));
           });
@@ -280,8 +284,10 @@ export default function ChatPage() {
       .then((truncated) => {
         const placeholderAssistant = { id: "temp-assistant", role: "assistant", content: "" };
         setMessages([...truncated, placeholderAssistant]);
+        setStreamingStatus("Regenerating...");
         return regenerateMessageStream(currentChat.id, userMsg.id, selectedModel, {
           onChunk: (c) => setStreamingContent((prev) => prev + c),
+          onStatus: (msg) => setStreamingStatus(msg),
           onDone: (fullContent, payload) => {
             setMessages((prev) =>
               prev.map((m) =>
@@ -289,6 +295,7 @@ export default function ChatPage() {
               )
             );
             setStreamingContent("");
+            setStreamingStatus(null);
             setSending(false);
             const chatId = currentChat.id;
             const titleFromPayload = payload?.title;
@@ -317,6 +324,7 @@ export default function ChatPage() {
       .catch((e) => {
         setError(e.message);
         setSending(false);
+        setStreamingStatus(null);
       });
   };
 

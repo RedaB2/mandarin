@@ -55,7 +55,7 @@ def put_settings():
         updates["api_keys"] = {}
         for k, v in data["api_keys"].items():
             if k in ("openai", "anthropic", "google") and v is not None:
-                s = (v or "").strip()
+                s = str(v).strip()
                 updates["api_keys"][k] = s  # allow empty string for removal
     update_settings(updates)
     if "api_keys" in updates:

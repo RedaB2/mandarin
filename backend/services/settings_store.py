@@ -91,7 +91,7 @@ def update_settings(updates):
             current = data.get("api_keys") or {}
             for k, v in new_keys.items():
                 if k in ("openai", "anthropic", "google") and v is not None:
-                    v = (v or "").strip()
+                    v = str(v).strip()
                     if v:
                         current[k] = v
                     elif k in current:
