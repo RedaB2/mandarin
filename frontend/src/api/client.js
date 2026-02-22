@@ -30,6 +30,22 @@ export async function getModels() {
   return r.json();
 }
 
+export async function getSettings() {
+  const r = await fetch(`${BASE}/api/settings`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function putSettings(data) {
+  const r = await fetch(`${BASE}/api/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function getContexts() {
   const r = await fetch(`${BASE}/api/contexts`);
   if (!r.ok) throw new Error(await r.text());
@@ -210,8 +226,16 @@ export async function addMessageStream(chatId, content, modelId, { onStarted, on
     body: JSON.stringify(body),
   });
   if (!r.ok) {
-    const data = await r.json().catch(() => ({}));
-    throw new Error(data.error || await r.text() || "Failed to send");
+    const text = await r.text();
+    let msg = "Failed to send";
+    try {
+      const data = JSON.parse(text);
+      if (data?.error) msg = data.error;
+      else if (text) msg = text;
+    } catch {
+      if (text) msg = text;
+    }
+    throw new Error(msg);
   }
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
@@ -251,15 +275,23 @@ export async function addMessageStream(chatId, content, modelId, { onStarted, on
  * Regenerate assistant reply for an existing user message. Does not add a new user message.
  * Same callbacks as addMessageStream.
  */
-export async function regenerateMessageStream(chatId, userMessageId, modelId, { onStarted, onChunk, onDone }) {
+export async function regenerateMessageStream(chatId, userMessageId, modelId, { onStarted, onChunk, onDone, onStatus }) {
   const r = await fetch(`${BASE}/api/chats/${chatId}/messages/regenerate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message_id: userMessageId, model_id: modelId }),
   });
   if (!r.ok) {
-    const data = await r.json().catch(() => ({}));
-    throw new Error(data.error || await r.text() || "Failed to regenerate");
+    const text = await r.text();
+    let msg = "Failed to regenerate";
+    try {
+      const data = JSON.parse(text);
+      if (data?.error) msg = data.error;
+      else if (text) msg = text;
+    } catch {
+      if (text) msg = text;
+    }
+    throw new Error(msg);
   }
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
@@ -276,6 +308,10 @@ export async function regenerateMessageStream(chatId, userMessageId, modelId, { 
         try {
           const obj = JSON.parse(line.slice(6));
           if (obj.t === "started") onStarted?.();
+          if (obj.t === "executing" && obj.msg) onStatus?.(obj.msg);
+          if (obj.t === "evaluating") onStatus?.("Evaluating response...");
+          if (obj.t === "retrying") onStatus?.(`Retrying (attempt ${obj.attempt || 2}/3)...`);
+          if (obj.t === "passed") onStatus?.(null);
           if (obj.t === "chunk" && obj.c) {
             fullContent += obj.c;
             onChunk(obj.c);

@@ -1,14 +1,16 @@
 """OpenAI thin wrapper. generate(messages, model, stream=True) -> yield chunks."""
 import json
-import config
 from openai import OpenAI
+
+from backend.services.settings_store import get_api_key
 
 _client = None
 
 def _get_client():
     global _client
     if _client is None:
-        _client = OpenAI(api_key=config.OPENAI_API_KEY or "sk-placeholder")
+        key = get_api_key("openai")
+        _client = OpenAI(api_key=key or "sk-placeholder")
     return _client
 
 
@@ -27,9 +29,9 @@ def _openai_messages(messages):
 
 def generate(messages, model, stream=True):
     """messages: list of { role, content }. Yields content deltas."""
-    client = _get_client()
-    if not config.OPENAI_API_KEY:
+    if not get_api_key("openai"):
         raise ValueError("OPENAI_API_KEY not set")
+    client = _get_client()
     stream_obj = client.chat.completions.create(
         model=model,
         messages=_openai_messages(messages),
@@ -48,7 +50,7 @@ def generate_with_tools(messages, model, tools, tool_runner):
     from backend.services.tools_schema import WEB_SEARCH_TOOL
     from backend.services import tools_schema
     client = _get_client()
-    if not config.OPENAI_API_KEY:
+    if not get_api_key("openai"):
         raise ValueError("OPENAI_API_KEY not set")
     openai_tools = tools_schema.openai_tools()
     web_search_meta = []

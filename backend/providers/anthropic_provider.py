@@ -1,7 +1,7 @@
 """Anthropic thin wrapper. generate(messages, model, stream=True) -> yield chunks."""
-import json
-import config
 import anthropic
+
+from backend.services.settings_store import get_api_key
 
 _client = None
 
@@ -9,7 +9,8 @@ _client = None
 def _get_client():
     global _client
     if _client is None:
-        _client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY or "placeholder")
+        key = get_api_key("anthropic")
+        _client = anthropic.Anthropic(api_key=key or "placeholder")
     return _client
 
 
@@ -61,7 +62,7 @@ def _to_anthropic_content(m):
 
 def generate(messages, model, stream=True):
     """messages: list of { role, content }. Yields content deltas."""
-    if not config.ANTHROPIC_API_KEY:
+    if not get_api_key("anthropic"):
         raise ValueError("ANTHROPIC_API_KEY not set")
     client = _get_client()
     system, chat_messages = _split_system(messages)
@@ -93,7 +94,7 @@ def generate_with_tools(messages, model, tools, tool_runner):
     """
     from backend.services.tools_schema import WEB_SEARCH_TOOL
     from backend.services import tools_schema
-    if not config.ANTHROPIC_API_KEY:
+    if not get_api_key("anthropic"):
         raise ValueError("ANTHROPIC_API_KEY not set")
     client = _get_client()
     system, rest = _split_system(messages)

@@ -4,6 +4,7 @@ import {
   createChat,
   getChat,
   getModels,
+  getSettings,
   addMessageStream,
   regenerateMessageStream,
   getContexts,
@@ -60,8 +61,8 @@ export default function ChatPage() {
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    Promise.all([getChats(), getModels(), getContexts(), getRules(), getCommands()])
-      .then(([chatsData, modelsData, contextsData, rulesData, commandsData]) => {
+    Promise.all([getChats(), getModels(), getContexts(), getRules(), getCommands(), getSettings()])
+      .then(([chatsData, modelsData, contextsData, rulesData, commandsData, settingsData]) => {
         setChats(chatsData);
         setContexts(contextsData || []);
         const available = (modelsData || []).filter((m) => m.available);
@@ -69,8 +70,9 @@ export default function ChatPage() {
         setAvailableRules(rulesData || []);
         setAvailableCommands(commandsData || []);
         if (available.length && !selectedModel) {
-          const defaultModel = available.find((m) => m.default);
-          setSelectedModel((defaultModel || available[0]).id);
+          const defaultId = (settingsData?.default_model || "").trim();
+          const defaultAvailable = defaultId && available.some((m) => m.id === defaultId);
+          setSelectedModel(defaultAvailable ? defaultId : available[0].id);
         }
       })
       .catch((e) => setError(e.message))
@@ -198,8 +200,10 @@ export default function ChatPage() {
           setStreamingContent("");
           const placeholderAssistant = { id: "temp-assistant", role: "assistant", content: "" };
           setMessages([...updatedMessages, placeholderAssistant]);
+          setStreamingStatus("Regenerating...");
           regenerateMessageStream(currentChat.id, Number(editingMessageId), selectedModel, {
             onChunk: (c) => setStreamingContent((prev) => prev + c),
+            onStatus: (msg) => setStreamingStatus(msg),
             onDone: (fullContent, payload) => {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -207,6 +211,7 @@ export default function ChatPage() {
                 )
               );
               setStreamingContent("");
+              setStreamingStatus(null);
               setSending(false);
               const chatId = currentChat.id;
               const titleFromPayload = payload?.title;
@@ -234,6 +239,7 @@ export default function ChatPage() {
             setError(e.message);
             setSending(false);
             setStreamingContent("");
+            setStreamingStatus(null);
             // Remove placeholder on error
             setMessages((prev) => prev.filter((m) => m.id !== "temp-assistant"));
           });
@@ -278,8 +284,10 @@ export default function ChatPage() {
       .then((truncated) => {
         const placeholderAssistant = { id: "temp-assistant", role: "assistant", content: "" };
         setMessages([...truncated, placeholderAssistant]);
+        setStreamingStatus("Regenerating...");
         return regenerateMessageStream(currentChat.id, userMsg.id, selectedModel, {
           onChunk: (c) => setStreamingContent((prev) => prev + c),
+          onStatus: (msg) => setStreamingStatus(msg),
           onDone: (fullContent, payload) => {
             setMessages((prev) =>
               prev.map((m) =>
@@ -287,6 +295,7 @@ export default function ChatPage() {
               )
             );
             setStreamingContent("");
+            setStreamingStatus(null);
             setSending(false);
             const chatId = currentChat.id;
             const titleFromPayload = payload?.title;
@@ -315,6 +324,7 @@ export default function ChatPage() {
       .catch((e) => {
         setError(e.message);
         setSending(false);
+        setStreamingStatus(null);
       });
   };
 

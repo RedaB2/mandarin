@@ -1522,3 +1522,197 @@ html, body {
 .message-content .markdown-content table { margin: 0.3em 0; }
 .message-content .markdown-content th,
 .message-content .markdown-content td { padding: 0.3em 0.5em; }
+
+/* Settings page */
+.settings-page {
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+  max-width: 640px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.settings-header {
+  margin-bottom: 2rem;
+}
+.settings-header h1 {
+  margin: 0 0 0.35rem 0;
+  font-size: 1.75rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.settings-subtitle {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-muted);
+}
+.settings-loading {
+  color: var(--text-muted);
+  padding: 2rem;
+  text-align: center;
+}
+.settings-success {
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  background: rgba(119, 197, 64, 0.15);
+  color: var(--accent-secondary-dark);
+  border: 1px solid var(--accent-secondary);
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+.settings-section-title {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.settings-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+.settings-card-header {
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.settings-card-header h3 {
+  margin: 0 0 0.25rem 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.settings-hint {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+.settings-card-body {
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+.settings-select {
+  min-width: 14rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
+}
+.settings-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.settings-btn {
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
+  cursor: pointer;
+}
+.settings-btn:hover:not(:disabled) {
+  background: var(--hover);
+}
+.settings-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-main);
+}
+.settings-btn.primary:hover:not(:disabled) {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+}
+.settings-btn.small {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.875rem;
+}
+.settings-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.settings-api-keys .settings-card-header {
+  padding-bottom: 0.75rem;
+}
+.settings-api-key-list {
+  padding: 1rem 1.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.settings-api-key-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.settings-api-key-label {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.settings-api-key-input-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.settings-input {
+  flex: 1;
+  min-width: 12rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
+}
+.settings-input::placeholder {
+  color: var(--text-muted);
+}
+.settings-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.settings-api-key-masked-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.settings-api-key-masked {
+  font-family: ui-monospace, monospace;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+.settings-btn-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.settings-btn-link:hover {
+  color: var(--accent-dark);
+}
+.settings-btn-link.danger {
+  color: var(--error-text);
+}
+.settings-btn-link.danger:hover {
+  color: var(--error-text);
+  opacity: 0.9;
+}
