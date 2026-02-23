@@ -62,6 +62,7 @@ export default function RulesCommandsPage() {
     success_criteria: "",
     guidelines: "",
     context_ids: [],
+    web_search_enabled: false,
   });
   const [creatingCommand, setCreatingCommand] = useState(false);
   const [expandedRuleIds, setExpandedRuleIds] = useState(() => new Set());
@@ -127,6 +128,7 @@ export default function RulesCommandsPage() {
                   success_criteria,
                   guidelines,
                   context_ids: Array.isArray(full.context_ids) ? full.context_ids : [],
+                  web_search_enabled: !!full.web_search_enabled,
                 };
               })
               .catch(() => null)
@@ -237,7 +239,7 @@ export default function RulesCommandsPage() {
   const startCreateCommand = () => {
     setCreatingCommand(true);
     setEditingCommandId(null);
-    setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [] });
+    setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [], web_search_enabled: false });
   };
 
   const startEditCommand = (id) => {
@@ -252,6 +254,7 @@ export default function RulesCommandsPage() {
         success_criteria: cached.success_criteria || "",
         guidelines: cached.guidelines || "",
         context_ids: Array.isArray(cached.context_ids) ? cached.context_ids : [],
+        web_search_enabled: !!cached.web_search_enabled,
       });
       return;
     }
@@ -261,7 +264,8 @@ export default function RulesCommandsPage() {
         const success_criteria = full.success_criteria != null ? full.success_criteria : (parseCommandSections(full.body || "").success_criteria || "");
         const guidelines = full.guidelines != null ? full.guidelines : (parseCommandSections(full.body || "").guidelines || "");
         const context_ids = Array.isArray(full.context_ids) ? full.context_ids : [];
-        setCommandsBodiesById((prev) => ({ ...prev, [full.id]: { body: full.body, task, success_criteria, guidelines, context_ids } }));
+        const web_search_enabled = !!full.web_search_enabled;
+        setCommandsBodiesById((prev) => ({ ...prev, [full.id]: { body: full.body, task, success_criteria, guidelines, context_ids, web_search_enabled } }));
         setEditingCommandId(full.id);
         setEditingCommandDraft({
           name: full.name || full.id,
@@ -271,6 +275,7 @@ export default function RulesCommandsPage() {
           success_criteria,
           guidelines,
           context_ids,
+          web_search_enabled,
         });
       })
       .catch((e) => setError(e.message));
@@ -291,6 +296,7 @@ export default function RulesCommandsPage() {
       return;
     }
     const context_ids = Array.isArray(editingCommandDraft.context_ids) ? editingCommandDraft.context_ids : [];
+    const web_search_enabled = !!editingCommandDraft.web_search_enabled;
     const payload = {
       name: editingCommandDraft.name || targetId,
       description: editingCommandDraft.description || "",
@@ -299,20 +305,21 @@ export default function RulesCommandsPage() {
       success_criteria,
       guidelines,
       context_ids,
+      web_search_enabled,
     };
     putCommand(targetId, payload)
       .then((saved) => {
         setCommands((prev) => {
           const others = prev.filter((c) => c.id !== saved.id);
-          return [...others, saved].sort((a, b) => a.name.localeCompare(b.name));
+          return [...others, { ...saved, web_search_enabled }].sort((a, b) => a.name.localeCompare(b.name));
         });
         setCommandsBodiesById((prev) => ({
           ...prev,
-          [saved.id]: { task, success_criteria, guidelines, context_ids, body: `## Task\n\n${task}\n\n## Success Criteria\n\n${success_criteria}\n\n## Guidelines\n\n${guidelines}` },
+          [saved.id]: { task, success_criteria, guidelines, context_ids, web_search_enabled, body: `## Task\n\n${task}\n\n## Success Criteria\n\n${success_criteria}\n\n## Guidelines\n\n${guidelines}` },
         }));
         setEditingCommandId(null);
         setCreatingCommand(false);
-        setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [] });
+        setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [], web_search_enabled: false });
       })
       .catch((e) => setError(e.message));
   };
@@ -329,7 +336,7 @@ export default function RulesCommandsPage() {
         });
         if (editingCommandId === id) {
           setEditingCommandId(null);
-          setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [] });
+          setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [], web_search_enabled: false });
         }
       })
       .catch((e) => setError(e.message));
@@ -341,6 +348,52 @@ export default function RulesCommandsPage() {
       const next = ids.includes(ctxId) ? ids.filter((id) => id !== ctxId) : [...ids, ctxId];
       return { ...prev, context_ids: next };
     });
+  };
+
+  const toggleCommandWebSearch = (command) => {
+    const cached = commandsBodiesById[command.id];
+    const buildPayload = (full) => ({
+      name: full.name || full.id,
+      description: full.description || "",
+      tags: full.tags || [],
+      task: (full.task ?? "").trim(),
+      success_criteria: (full.success_criteria ?? "").trim(),
+      guidelines: (full.guidelines ?? "").trim(),
+      context_ids: Array.isArray(full.context_ids) ? full.context_ids : [],
+      web_search_enabled: !(full.web_search_enabled ?? command.web_search_enabled),
+    });
+    const applySaved = (nextEnabled) => {
+      setCommands((prev) =>
+        prev.map((cmd) => (cmd.id === command.id ? { ...cmd, web_search_enabled: nextEnabled } : cmd))
+      );
+      setCommandsBodiesById((prev) => ({
+        ...prev,
+        [command.id]: { ...(prev[command.id] || {}), web_search_enabled: nextEnabled },
+      }));
+      if (editingCommandId === command.id) {
+        setEditingCommandDraft((prev) => ({ ...prev, web_search_enabled: nextEnabled }));
+      }
+    };
+    if (cached && typeof cached === "object" && (cached.task != null || cached.body != null)) {
+      const full = {
+        ...command,
+        task: cached.task ?? "",
+        success_criteria: cached.success_criteria ?? "",
+        guidelines: cached.guidelines ?? "",
+        context_ids: cached.context_ids ?? [],
+      };
+      const nextEnabled = !(command.web_search_enabled ?? false);
+      putCommand(command.id, buildPayload({ ...full, web_search_enabled: command.web_search_enabled }))
+        .then(() => applySaved(nextEnabled))
+        .catch((e) => setError(e.message));
+    } else {
+      getCommand(command.id)
+        .then((full) => {
+          const nextEnabled = !(full.web_search_enabled ?? false);
+          return putCommand(command.id, buildPayload(full)).then(() => applySaved(nextEnabled));
+        })
+        .catch((e) => setError(e.message));
+    }
   };
 
   const renderRulesTab = () => (
@@ -563,6 +616,19 @@ export default function RulesCommandsPage() {
               </div>
             )}
           </div>
+          <div className="edit-panel-row">
+            <label className="switch-inline">
+              <span className="switch-label">Enable web search for this command</span>
+              <span className="switch">
+                <input
+                  type="checkbox"
+                  checked={!!editingCommandDraft.web_search_enabled}
+                  onChange={(e) => setEditingCommandDraft((prev) => ({ ...prev, web_search_enabled: e.target.checked }))}
+                />
+                <span className="switch-slider" />
+              </span>
+            </label>
+          </div>
           <div>
             <button type="button" className="btn primary" onClick={() => saveCommand(editingCommandId)}>
               Save
@@ -573,7 +639,7 @@ export default function RulesCommandsPage() {
               onClick={() => {
                 setCreatingCommand(false);
                 setEditingCommandId(null);
-                setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [] });
+                setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [], web_search_enabled: false });
               }}
             >
               Cancel
@@ -602,7 +668,17 @@ export default function RulesCommandsPage() {
                 <span className="context-id-pill" title={c.id}>
                   {c.id}
                 </span>
-                {c.description && <span className="context-description-text">{c.description}</span>}
+                <button
+                  type="button"
+                  className={
+                    "rule-status-pill " +
+                    (c.web_search_enabled ? "rule-status-pill--always" : "rule-status-pill--conditional")
+                  }
+                  onClick={() => toggleCommandWebSearch(c)}
+                  title={c.web_search_enabled ? "Click to turn web search off" : "Click to turn web search on"}
+                >
+                  {c.web_search_enabled ? "Web search on" : "Web search off"}
+                </button>
                 <div className="context-card-actions">
                   <button type="button" className="btn small" onClick={() => startEditCommand(c.id)}>
                     Edit
@@ -682,6 +758,20 @@ export default function RulesCommandsPage() {
                       </div>
                     )}
                   </div>
+                  <div className="edit-panel-row">
+                    <label className="switch-inline">
+                      <span className="switch-label">Enable web search for this command</span>
+                      <span className="switch">
+                        <input
+                          type="checkbox"
+                          checked={!!editingCommandDraft.web_search_enabled}
+                          onChange={(e) => setEditingCommandDraft((prev) => ({ ...prev, web_search_enabled: e.target.checked }))}
+                          aria-label={`Web search for ${c.id}`}
+                        />
+                        <span className="switch-slider" />
+                      </span>
+                    </label>
+                  </div>
                   <div className="context-card-edit-actions">
                     <button type="button" className="btn primary" onClick={() => saveCommand(c.id)}>
                       Save
@@ -691,7 +781,7 @@ export default function RulesCommandsPage() {
                       className="btn"
                       onClick={() => {
                         setEditingCommandId(null);
-                        setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [] });
+                        setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [], web_search_enabled: false });
                       }}
                     >
                       Cancel

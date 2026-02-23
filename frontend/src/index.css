@@ -463,11 +463,20 @@ html, body {
 }
 .context-card-header {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.5rem 0.75rem;
   padding: 1rem 1rem 0.75rem;
   border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.context-card-header > * {
+  flex-shrink: 0;
+}
+.context-card-header > .context-card-title,
+.context-card-header > .context-description-text {
+  flex-shrink: 1;
+  min-width: 0;
 }
 .context-card-collapse-trigger {
   flex-shrink: 0;
@@ -510,8 +519,21 @@ html, body {
   font-size: 1.125rem;
   font-weight: 600;
   color: var(--text-primary);
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.context-description-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  max-width: 100%;
 }
 .context-id-pill {
   font-size: 0.75rem;
@@ -527,8 +549,10 @@ html, body {
 .context-card-actions {
   display: flex;
   gap: 0.35rem;
+  margin-left: auto;
 }
 .rule-status-pill {
+  white-space: nowrap;
   border: none;
   cursor: pointer;
   font-size: 0.75rem;

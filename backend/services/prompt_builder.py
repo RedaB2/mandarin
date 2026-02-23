@@ -49,6 +49,7 @@ class Command:
         success_criteria: Optional[str] = None,
         guidelines: Optional[str] = None,
         context_ids: Optional[List[str]] = None,
+        web_search_enabled: bool = False,
     ) -> None:
         self.id = id_
         self.name = name
@@ -59,6 +60,7 @@ class Command:
         self.success_criteria = success_criteria
         self.guidelines = guidelines
         self.context_ids = context_ids or []
+        self.web_search_enabled = web_search_enabled
 
 
 def _parse_command_sections(body: str) -> Dict[str, str]:
@@ -225,6 +227,7 @@ def load_commands() -> Dict[str, Command]:
             description = ""
             tags: List[str] = []
             context_ids: List[str] = []
+            web_search_enabled = False
             if meta:
                 cid = str(meta.get("id") or cid)
                 name = str(meta.get("name") or name)
@@ -235,6 +238,7 @@ def load_commands() -> Dict[str, Command]:
                 ctx_ids = meta.get("context_ids") or []
                 if isinstance(ctx_ids, list):
                     context_ids = [str(x) for x in ctx_ids if x]
+                web_search_enabled = bool(meta.get("web_search_enabled", meta.get("web_search", False)))
             if not re.match(r"^[a-zA-Z0-9_-]+$", cid):
                 print(f"Skipping command with invalid id {cid!r} in {path}")
                 continue
@@ -253,6 +257,7 @@ def load_commands() -> Dict[str, Command]:
                 success_criteria=sections.get("success_criteria") or None,
                 guidelines=sections.get("guidelines") or None,
                 context_ids=context_ids,
+                web_search_enabled=web_search_enabled,
             )
     _COMMANDS_CACHE = cmds
     _COMMANDS_MTIME = mtime

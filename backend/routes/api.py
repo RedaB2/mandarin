@@ -231,6 +231,7 @@ def list_commands_route():
                 "name": c.name,
                 "description": c.description,
                 "tags": c.tags,
+                "web_search_enabled": getattr(c, "web_search_enabled", False),
             }
         )
     out.sort(key=lambda x: x["name"].lower())
@@ -261,6 +262,7 @@ def get_command(id):
         out["guidelines"] = c.guidelines
     if getattr(c, "context_ids", None) is not None:
         out["context_ids"] = c.context_ids
+    out["web_search_enabled"] = getattr(c, "web_search_enabled", False)
     return jsonify(out)
 
 
@@ -287,11 +289,13 @@ def put_command(id):
         context_ids = []
     if context_ids is not None:
         context_ids = [str(x) for x in context_ids if x and re.match(r"^[a-zA-Z0-9_-]+$", str(x))]
+    web_search_enabled = bool(data.get("web_search_enabled", False))
     meta = {
         "id": safe,
         "name": name,
         "description": description,
         "tags": tags,
+        "web_search_enabled": web_search_enabled,
     }
     if context_ids is not None:
         meta["context_ids"] = context_ids
@@ -545,43 +549,115 @@ def regenerate_message(chat_id):
 
     def stream():
         from backend.providers import base as providers_base
+        from backend.services.command_evaluator import evaluate_command_response, execute_task_stream
         meta = None
         try:
             yield f"data: {json.dumps({'t': 'started'})}\n\n"
-            web_search_enabled = getattr(chat, "web_search_enabled", False)
-            if web_search_enabled:
-                try:
-                    full_content, web_search_meta = None, []
-                    for event in providers_base.generate_with_web_search(messages_for_llm, model_id):
-                        if event[0] == "status":
-                            yield f"data: {json.dumps({'t': 'executing', 'msg': event[1]})}\n\n"
-                        elif event[0] == "result":
-                            full_content, web_search_meta = event[1]
+            use_evaluation_regen = (
+                cmd_regen is not None
+                and getattr(cmd_regen, "task", None)
+                and getattr(cmd_regen, "success_criteria", None)
+            )
+            user_instructions = content.split(None, 1)[1] if cmd_name and content.split() else (content or "")
+            messages_before_user = [{"role": m["role"], "content": m["content"]} for m in messages_for_llm[:-1]]
+
+            if use_evaluation_regen:
+                yield f"data: {json.dumps({'t': 'executing', 'msg': 'Completing task...'})}\n\n"
+                full_content = ""
+                previous_feedback = None
+                web_search_meta = None
+                use_web_search = getattr(cmd_regen, "web_search_enabled", False)
+                for attempt in range(1, 4):
+                    buffer = []
+                    for item in execute_task_stream(
+                        cmd_regen,
+                        user_instructions,
+                        system,
+                        messages_before_user,
+                        model_id,
+                        previous_feedback=previous_feedback,
+                        use_web_search=use_web_search,
+                    ):
+                        if isinstance(item, tuple):
+                            if item[0] == "status":
+                                yield f"data: {json.dumps({'t': 'executing', 'msg': item[1]})}\n\n"
+                            elif item[0] == "meta":
+                                web_search_meta = item[1]
+                            elif item[0] == "chunk":
+                                buffer.append(item[1])
+                        else:
+                            buffer.append(item)
+                    attempt_content = "".join(buffer)
+                    yield f"data: {json.dumps({'t': 'evaluating', 'attempt': attempt})}\n\n"
+                    passed = False
+                    feedback = ""
+                    for eval_attempt in range(1, 4):
+                        try:
+                            passed, feedback = evaluate_command_response(
+                                cmd_regen.task,
+                                cmd_regen.success_criteria,
+                                cmd_regen.guidelines or "",
+                                user_instructions,
+                                attempt_content,
+                                model_id,
+                                timeout=60,
+                            )
                             break
-                    if full_content is None:
-                        full_content = ""
-                except Exception as e:
-                    yield f"data: {json.dumps({'t': 'error', 'error': str(e)})}\n\n"
-                    return
-                if full_content:
-                    for sse in _stream_content_chunked(full_content):
-                        yield sse
-                meta = {"web_search": web_search_meta} if web_search_meta else None
+                        except (TimeoutError, Exception):
+                            if eval_attempt >= 3:
+                                passed = False
+                                feedback = "Evaluation failed after multiple attempts"
+                                break
+                    if passed:
+                        for chunk in buffer:
+                            yield f"data: {json.dumps({'t': 'chunk', 'c': chunk})}\n\n"
+                        full_content = attempt_content
+                        yield f"data: {json.dumps({'t': 'passed', 'attempt': attempt})}\n\n"
+                        break
+                    elif attempt < 3:
+                        previous_feedback = feedback
+                        yield f"data: {json.dumps({'t': 'retrying', 'attempt': attempt + 1})}\n\n"
+                    else:
+                        for chunk in buffer:
+                            yield f"data: {json.dumps({'t': 'chunk', 'c': chunk})}\n\n"
+                        full_content = attempt_content
+                if web_search_meta is not None:
+                    meta = {"web_search": web_search_meta}
             else:
-                print("\n" + "=" * 60 + " LLM PROMPT (regenerate) " + "=" * 60)
-                for msg in messages_for_llm:
-                    role = msg.get("role", "")
-                    c = msg.get("content")
-                    content_preview = (c[:2000] if isinstance(c, str) else "[multimodal]")
-                    if isinstance(c, str) and len(c) > 2000:
-                        content_preview += "\n... [truncated]"
-                    print(f"\n--- {role.upper()} ---\n{content_preview}")
-                print("=" * 60 + "\n")
-                buffer = []
-                for sse, chunk_text in _stream_provider_chunks(providers_base.generate(messages_for_llm, model_id, stream=True)):
-                    buffer.append(chunk_text)
-                    yield sse
-                full_content = "".join(buffer)
+                web_search_enabled = getattr(cmd_regen, "web_search_enabled", False) if cmd_regen else getattr(chat, "web_search_enabled", False)
+                if web_search_enabled:
+                    try:
+                        full_content, web_search_meta = None, []
+                        for event in providers_base.generate_with_web_search(messages_for_llm, model_id):
+                            if event[0] == "status":
+                                yield f"data: {json.dumps({'t': 'executing', 'msg': event[1]})}\n\n"
+                            elif event[0] == "result":
+                                full_content, web_search_meta = event[1]
+                                break
+                        if full_content is None:
+                            full_content = ""
+                    except Exception as e:
+                        yield f"data: {json.dumps({'t': 'error', 'error': str(e)})}\n\n"
+                        return
+                    if full_content:
+                        for sse in _stream_content_chunked(full_content):
+                            yield sse
+                    meta = {"web_search": web_search_meta} if web_search_meta else None
+                else:
+                    print("\n" + "=" * 60 + " LLM PROMPT (regenerate) " + "=" * 60)
+                    for msg in messages_for_llm:
+                        role = msg.get("role", "")
+                        c = msg.get("content")
+                        content_preview = (c[:2000] if isinstance(c, str) else "[multimodal]")
+                        if isinstance(c, str) and len(c) > 2000:
+                            content_preview += "\n... [truncated]"
+                        print(f"\n--- {role.upper()} ---\n{content_preview}")
+                    print("=" * 60 + "\n")
+                    buffer = []
+                    for sse, chunk_text in _stream_provider_chunks(providers_base.generate(messages_for_llm, model_id, stream=True)):
+                        buffer.append(chunk_text)
+                        yield sse
+                    full_content = "".join(buffer)
             assistant_msg = Message(chat_id=chat_id, role="assistant", content=full_content, meta=meta)
             db.session.add(assistant_msg)
             db.session.commit()
@@ -750,18 +826,29 @@ def add_message(chat_id):
                 yield f"data: {json.dumps({'t': 'executing', 'msg': 'Completing task...'})}\n\n"
                 full_content = ""
                 previous_feedback = None
+                web_search_meta = None
+                use_web_search = getattr(cmd, "web_search_enabled", False)
                 for attempt in range(1, 4):
                     # Collect chunks without yielding them yet - wait for evaluation
                     buffer = []
-                    for chunk in execute_task_stream(
+                    for item in execute_task_stream(
                         cmd,
                         user_instructions,
                         system,
                         messages_before_user,
                         model_id,
                         previous_feedback=previous_feedback,
+                        use_web_search=use_web_search,
                     ):
-                        buffer.append(chunk)
+                        if isinstance(item, tuple):
+                            if item[0] == "status":
+                                yield f"data: {json.dumps({'t': 'executing', 'msg': item[1]})}\n\n"
+                            elif item[0] == "meta":
+                                web_search_meta = item[1]
+                            elif item[0] == "chunk":
+                                buffer.append(item[1])
+                        else:
+                            buffer.append(item)
                     attempt_content = "".join(buffer)
 
                     yield f"data: {json.dumps({'t': 'evaluating', 'attempt': attempt})}\n\n"
@@ -801,8 +888,11 @@ def add_message(chat_id):
                         for chunk in buffer:
                             yield f"data: {json.dumps({'t': 'chunk', 'c': chunk})}\n\n"
                         full_content = attempt_content
+                if web_search_meta is not None:
+                    meta = {"web_search": web_search_meta}
             else:
-                web_search_enabled = getattr(chat, "web_search_enabled", False)
+                # Command invoked but no evaluation: use command's web search setting only
+                web_search_enabled = getattr(cmd, "web_search_enabled", False) if cmd else getattr(chat, "web_search_enabled", False)
                 if web_search_enabled:
                     try:
                         full_content, web_search_meta = None, []

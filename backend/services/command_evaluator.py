@@ -13,11 +13,13 @@ def execute_task_stream(
     messages_before_user: List[Dict[str, str]],
     model_id: str,
     previous_feedback: Optional[str] = None,
+    use_web_search: bool = False,
 ):
     """Execute command task and stream response.
 
     If previous_feedback is provided, include it in the user message for retry.
-    Yields content chunks.
+    When use_web_search is False, yields string chunks. When True, yields
+    ("status", str), ("chunk", str), ("meta", list) for the API to forward.
     """
     from backend.providers import base as providers_base
 
@@ -48,7 +50,20 @@ def execute_task_stream(
     messages_for_llm.extend(messages_before_user)
     messages_for_llm.append({"role": "user", "content": user_content})
 
-    yield from providers_base.generate(messages_for_llm, model_id, stream=True)
+    if not use_web_search:
+        yield from providers_base.generate(messages_for_llm, model_id, stream=True)
+        return
+
+    # use_web_search: yield ("status", msg), then ("chunk", full_content), then ("meta", web_search_meta)
+    for event in providers_base.generate_with_web_search(messages_for_llm, model_id):
+        if event[0] == "status":
+            yield ("status", event[1])
+        elif event[0] == "result":
+            full_content, web_search_meta = event[1]
+            if full_content:
+                yield ("chunk", full_content)
+            yield ("meta", web_search_meta or [])
+            return
 
 def _get_evaluation_prompt():
     """Load evaluation prompt from prompts/command_evaluation.md; fallback to inline if missing."""
