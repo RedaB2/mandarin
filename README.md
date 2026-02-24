@@ -25,19 +25,23 @@ Mandarin is an AI chat interface that combines **written context** (background, 
 
 ## Getting Started
 
+Prerequisites:
+- Python 3.12 or 3.13
+- Node.js and npm
+
 ```bash
 # Clone the repo
 git clone https://github.com/chase12803/mandarin.git
 cd mandarin
 
-# Linux (official support)
-./update-app.sh
-./run-app.sh
+# Works on Linux, macOS, and Windows
+python run.py
 
-# Windows (unofficial support)
-./update-app-windows.sh
-./run-app-windows.sh
+# If your machine exposes Python as python3 instead
+python3 run.py
 ```
+
+Deprecated OS-specific wrappers were moved to `scripts/legacy/`.
 
 ---
 
