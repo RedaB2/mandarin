@@ -1653,7 +1653,9 @@ body.sidebar-resizing * {
   margin: 0;
   padding: 2.25rem 1rem 1rem 1rem;
   border-radius: 8px;
-  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  overflow-x: hidden;
 }
 .markdown-content pre code,
 .markdown-content pre code.hljs {
@@ -1661,6 +1663,8 @@ body.sidebar-resizing * {
   padding: 0;
   font-size: 0.875rem;
   color: var(--text-code);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 .markdown-content blockquote {
   margin: 0.5em 0;
