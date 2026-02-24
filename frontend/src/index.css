@@ -1501,6 +1501,16 @@ html, body {
 .markdown-content tbody tr:nth-child(even) {
   background: var(--hover);
 }
+.markdown-content .katex-display {
+  margin: 0.55em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.1em 0;
+}
+.markdown-content .katex,
+.markdown-content .katex-display {
+  white-space: normal;
+}
 
 /* Tighter spacing for markdown inside chat messages (assistant responses) */
 .message-content .markdown-content {
@@ -1546,6 +1556,7 @@ html, body {
 .message-content .markdown-content table { margin: 0.3em 0; }
 .message-content .markdown-content th,
 .message-content .markdown-content td { padding: 0.3em 0.5em; }
+.message-content .markdown-content .katex-display { margin: 0.25em 0; }
 
 /* Settings page */
 .settings-page {
