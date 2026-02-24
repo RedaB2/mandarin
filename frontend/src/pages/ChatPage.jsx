@@ -22,6 +22,50 @@ const VIEWPORT_PADDING = 8;
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 const MAX_ATTACHMENTS = 3;
 const ALLOWED_ATTACHMENT_EXTENSIONS = [".pdf", ".docx", ".txt", ".md", ".py", ".png", ".jpg", ".jpeg", ".webp"];
+const SIDEBAR_WIDTH_STORAGE_KEY = "mandarin-chat-sidebar-width";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "mandarin-chat-sidebar-collapsed";
+const SIDEBAR_DEFAULT_WIDTH = 260;
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_MAX_WIDTH = 460;
+const SIDEBAR_COLLAPSED_WIDTH = 68;
+const CHAT_MAIN_MIN_WIDTH = 360;
+const MOBILE_SIDEBAR_BREAKPOINT = 768;
+
+function clampSidebarWidth(width) {
+  const parsed = Number(width);
+  if (!Number.isFinite(parsed)) return SIDEBAR_DEFAULT_WIDTH;
+  if (typeof window === "undefined") {
+    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsed));
+  }
+  const viewportLimitedMax = Math.max(
+    SIDEBAR_MIN_WIDTH,
+    Math.min(SIDEBAR_MAX_WIDTH, window.innerWidth - CHAT_MAIN_MIN_WIDTH),
+  );
+  return Math.min(viewportLimitedMax, Math.max(SIDEBAR_MIN_WIDTH, parsed));
+}
+
+function getInitialSidebarWidth() {
+  try {
+    const stored = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    if (stored == null) return SIDEBAR_DEFAULT_WIDTH;
+    return clampSidebarWidth(stored);
+  } catch {
+    return SIDEBAR_DEFAULT_WIDTH;
+  }
+}
+
+function getInitialSidebarCollapsed() {
+  try {
+    return JSON.parse(localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) ?? "false");
+  } catch {
+    return false;
+  }
+}
+
+function getChatInitial(title) {
+  const text = String(title || "").trim();
+  return text ? text[0].toUpperCase() : "?";
+}
 
 export default function ChatPage() {
   const [chats, setChats] = useState([]);
@@ -54,17 +98,99 @@ export default function ChatPage() {
   const [menuOpenForChatId, setMenuOpenForChatId] = useState(null);
   const [expandedSourcesMessageIds, setExpandedSourcesMessageIds] = useState(new Set());
   const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [sidebarWidth, setSidebarWidth] = useState(() => getInitialSidebarWidth());
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => getInitialSidebarCollapsed());
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(
+    () => (typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(`(max-width: ${MOBILE_SIDEBAR_BREAKPOINT}px)`).matches
+      : false),
+  );
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const menuTriggerRef = useRef(null);
   const menuRef = useRef(null);
   const contextDropdownRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
+  const sidebarResizeRef = useRef({ startX: 0, startWidth: SIDEBAR_DEFAULT_WIDTH });
   const streamingChatIdRef = useRef(null);
   const streamAbortControllerRef = useRef(null);
   const currentChatIdRef = useRef(currentChat?.id ?? null);
   useEffect(() => {
     currentChatIdRef.current = currentChat?.id ?? null;
   }, [currentChat?.id]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    const mediaQuery = window.matchMedia(`(max-width: ${MOBILE_SIDEBAR_BREAKPOINT}px)`);
+    const updateViewport = (event) => setIsMobileViewport(event.matches);
+    setIsMobileViewport(mediaQuery.matches);
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", updateViewport);
+      return () => mediaQuery.removeEventListener("change", updateViewport);
+    }
+    mediaQuery.addListener(updateViewport);
+    return () => mediaQuery.removeListener(updateViewport);
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => setSidebarWidth((prev) => clampSidebarWidth(prev));
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingSidebar || isMobileViewport) return;
+    const onPointerMove = (event) => {
+      const delta = event.clientX - sidebarResizeRef.current.startX;
+      setSidebarWidth(clampSidebarWidth(sidebarResizeRef.current.startWidth + delta));
+    };
+    const stopResizing = () => setIsResizingSidebar(false);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopResizing);
+    document.body.classList.add("sidebar-resizing");
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopResizing);
+      document.body.classList.remove("sidebar-resizing");
+    };
+  }, [isResizingSidebar, isMobileViewport]);
+
+  useEffect(() => {
+    if (isMobileViewport) setIsResizingSidebar(false);
+  }, [isMobileViewport]);
+
+  useEffect(() => {
+    if (!isMobileSidebarOpen) return;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setIsMobileSidebarOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [isMobileSidebarOpen]);
+
+  useEffect(() => {
+    if (!isMobileViewport) setIsMobileSidebarOpen(false);
+  }, [isMobileViewport]);
+
+  useEffect(() => {
+    if (!isSidebarCollapsed) return;
+    setMenuOpenForChatId(null);
+    setRenamingChatId(null);
+  }, [isSidebarCollapsed]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(clampSidebarWidth(sidebarWidth))));
+    } catch {}
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, JSON.stringify(isSidebarCollapsed));
+    } catch {}
+  }, [isSidebarCollapsed]);
 
   useEffect(() => {
     Promise.all([getChats(), getModels(), getContexts(), getRules(), getCommands(), getSettings()])
@@ -156,10 +282,29 @@ export default function ChatPage() {
   const handleNewChat = () => {
     setCurrentChat(null);
     setMessages([]);
+    setIsMobileSidebarOpen(false);
   };
 
   const handleSelectChat = (chat) => {
     setCurrentChat(chat);
+    setIsMobileSidebarOpen(false);
+  };
+
+  const toggleSidebarCollapsed = () => {
+    setIsSidebarCollapsed((prev) => !prev);
+    setMenuOpenForChatId(null);
+    setRenamingChatId(null);
+  };
+
+  const closeMobileSidebar = () => {
+    setIsMobileSidebarOpen(false);
+  };
+
+  const startSidebarResize = (event) => {
+    if (isMobileViewport || isSidebarCollapsed) return;
+    event.preventDefault();
+    sidebarResizeRef.current = { startX: event.clientX, startWidth: sidebarWidth };
+    setIsResizingSidebar(true);
   };
 
   const isPersistedMessage = (msg) =>
@@ -822,14 +967,81 @@ export default function ChatPage() {
     setSelectedPickerIndex((i) => (list.length ? Math.min(i, list.length - 1) : 0));
   }, [pickerType, pickerQuery, filteredCommands.length, filteredRules.length]);
 
+  const isDesktopSidebarCollapsed = !isMobileViewport && isSidebarCollapsed;
+  const sidebarInlineWidth = isDesktopSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth;
+  const sidebarStyle = isMobileViewport
+    ? undefined
+    : { "--sidebar-width": `${Math.round(sidebarInlineWidth)}px` };
+
   return (
-    <div className="chat-page">
-      <aside className="sidebar">
-        <button className="new-chat-btn" onClick={() => handleNewChat()}>
-          + New chat
-        </button>
+    <div className={`chat-page ${isResizingSidebar ? "chat-page--sidebar-resizing" : ""}`}>
+      {isMobileViewport && isMobileSidebarOpen && (
+        <button
+          type="button"
+          className="sidebar-mobile-backdrop"
+          onClick={closeMobileSidebar}
+          aria-label="Close chats sidebar"
+        />
+      )}
+      <aside
+        className={`sidebar ${isDesktopSidebarCollapsed ? "sidebar--collapsed" : ""} ${isMobileViewport ? "sidebar--mobile" : ""} ${isMobileSidebarOpen ? "sidebar--mobile-open" : ""}`}
+        style={sidebarStyle}
+        aria-hidden={isMobileViewport && !isMobileSidebarOpen}
+      >
+        <div className="sidebar-header">
+          <button
+            type="button"
+            className="sidebar-toggle-btn"
+            onClick={isMobileViewport ? closeMobileSidebar : toggleSidebarCollapsed}
+            aria-label={
+              isMobileViewport
+                ? "Close sidebar"
+                : isDesktopSidebarCollapsed
+                  ? "Expand sidebar"
+                  : "Collapse sidebar"
+            }
+            aria-expanded={isMobileViewport ? undefined : !isDesktopSidebarCollapsed}
+            title={
+              isMobileViewport
+                ? "Close sidebar"
+                : isDesktopSidebarCollapsed
+                  ? "Expand sidebar"
+                  : "Collapse sidebar"
+            }
+          >
+            {isMobileViewport ? "×" : isDesktopSidebarCollapsed ? "»" : "«"}
+          </button>
+          <button
+            className="new-chat-btn"
+            onClick={() => handleNewChat()}
+            title={isDesktopSidebarCollapsed ? "New chat" : undefined}
+            aria-label="New chat"
+          >
+            {isDesktopSidebarCollapsed ? "+" : "+ New chat"}
+          </button>
+        </div>
         {loading ? (
           <p className="sidebar-loading">Loading...</p>
+        ) : isDesktopSidebarCollapsed ? (
+          <ul className="chat-list chat-list--collapsed">
+            {chats.length === 0 ? (
+              <li className="sidebar-empty sidebar-empty--compact">No chats</li>
+            ) : (
+              chats.map((c) => (
+                <li key={c.id} className="chat-list-item chat-list-item--collapsed">
+                  <button
+                    type="button"
+                    className={`chat-item chat-item--collapsed ${currentChat?.id === c.id ? "active" : ""}`}
+                    onClick={() => handleSelectChat(c)}
+                    title={c.title || "Untitled chat"}
+                    aria-label={`Open chat: ${c.title || "Untitled chat"}`}
+                  >
+                    <span className="chat-item-collapsed-label">{getChatInitial(c.title)}</span>
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
         ) : (
           <>
             <ul className="chat-list">
@@ -913,7 +1125,28 @@ export default function ChatPage() {
           </>
         )}
       </aside>
+      {!isMobileViewport && !isDesktopSidebarCollapsed && (
+        <div
+          className="sidebar-resize-handle"
+          role="separator"
+          aria-label="Resize chats sidebar"
+          aria-orientation="vertical"
+          onPointerDown={startSidebarResize}
+        />
+      )}
       <section className="chat-main">
+        {isMobileViewport && (
+          <div className="chat-mobile-toolbar">
+            <button
+              type="button"
+              className="sidebar-mobile-open-btn"
+              onClick={() => setIsMobileSidebarOpen(true)}
+              aria-label="Open chats sidebar"
+            >
+              ☰ Chats
+            </button>
+          </div>
+        )}
         {error && (
           <div className="error-banner">
             {error}
