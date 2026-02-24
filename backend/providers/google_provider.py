@@ -19,6 +19,12 @@ def _get_client():
     return _client
 
 
+def _obj_get(obj, key, default=None):
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 def _build_contents(messages):
     """Build list of Content for Gemini from messages (role, content or tool parts)."""
     system_parts = []
@@ -67,6 +73,142 @@ def _build_contents(messages):
     return system, contents
 
 
+def _content_to_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text") or ""
+                if text:
+                    parts.append(text)
+            elif _obj_get(part, "text") is not None:
+                text = _obj_get(part, "text") or ""
+                if text:
+                    parts.append(text)
+        return "\n".join(parts).strip()
+    return ""
+
+
+def _last_user_query(messages):
+    for m in reversed(messages or []):
+        if m.get("role") != "user":
+            continue
+        text = _content_to_text(m.get("content"))
+        if text:
+            return text
+    return "web search"
+
+
+def _extract_response_text(response):
+    text = _obj_get(response, "text") or ""
+    if isinstance(text, str) and text.strip():
+        return text
+    pieces = []
+    candidates = _obj_get(response, "candidates") or []
+    for candidate in candidates:
+        content = _obj_get(candidate, "content")
+        if not content:
+            continue
+        for part in _obj_get(content, "parts") or []:
+            part_text = _obj_get(part, "text") or ""
+            if part_text:
+                pieces.append(part_text)
+    return "".join(pieces)
+
+
+def _extract_native_web_search_meta(response, fallback_query):
+    """
+    Normalize Gemini grounding metadata into UI shape:
+    [{ "query": "...", "results": [{title, url, snippet, content}] }]
+    """
+    queries = []
+    results = []
+    result_by_url = {}
+
+    def _add_result(url, title="", snippet=""):
+        clean_url = (url or "").strip()
+        if not clean_url:
+            return
+        key = clean_url.lower()
+        snippet_text = (snippet or "").strip()
+        if key in result_by_url:
+            if snippet_text and not result_by_url[key]["snippet"]:
+                result_by_url[key]["snippet"] = snippet_text
+                result_by_url[key]["content"] = snippet_text
+            return
+        entry = {
+            "title": (title or clean_url).strip() or clean_url,
+            "url": clean_url,
+            "snippet": snippet_text,
+            "content": snippet_text,
+        }
+        results.append(entry)
+        result_by_url[key] = entry
+
+    candidates = _obj_get(response, "candidates") or []
+    for candidate in candidates:
+        grounding = _obj_get(candidate, "grounding_metadata") or _obj_get(candidate, "groundingMetadata")
+        if not grounding:
+            continue
+
+        raw_queries = _obj_get(grounding, "web_search_queries") or _obj_get(grounding, "webSearchQueries") or []
+        for query in raw_queries:
+            if isinstance(query, str) and query.strip():
+                queries.append(query.strip())
+
+        chunks = _obj_get(grounding, "grounding_chunks") or _obj_get(grounding, "groundingChunks") or []
+        for chunk in chunks:
+            web = _obj_get(chunk, "web") or {}
+            _add_result(
+                _obj_get(web, "uri") or _obj_get(web, "url") or "",
+                _obj_get(web, "title") or "",
+            )
+
+        supports = _obj_get(grounding, "grounding_supports") or _obj_get(grounding, "groundingSupports") or []
+        for support in supports:
+            indices = _obj_get(support, "grounding_chunk_indices") or _obj_get(support, "groundingChunkIndices") or []
+            segment = _obj_get(support, "segment") or {}
+            snippet = (_obj_get(segment, "text") or "").strip()
+            if not snippet:
+                continue
+            for index in indices:
+                try:
+                    chunk_idx = int(index)
+                except (TypeError, ValueError):
+                    continue
+                if chunk_idx < 0 or chunk_idx >= len(chunks):
+                    continue
+                web = _obj_get(chunks[chunk_idx], "web") or {}
+                url = (_obj_get(web, "uri") or _obj_get(web, "url") or "").strip()
+                if not url:
+                    continue
+                _add_result(url, _obj_get(web, "title") or "", snippet)
+                break
+
+    query = queries[0] if queries else ((fallback_query or "").strip() or "web search")
+    return [{"query": query, "results": results}] if results else []
+
+
+def _generate_with_native_web_search(messages, model):
+    """Gemini native web search path using google_search grounding."""
+    client = _get_client()
+    system, contents = _build_contents(messages)
+    config_kw = {"tools": [types.Tool(google_search=types.GoogleSearch())]}
+    if system:
+        config_kw["system_instruction"] = system
+    response = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=types.GenerateContentConfig(**config_kw),
+    )
+    final = (_extract_response_text(response) or "").strip()
+    query_fallback = _last_user_query(messages)
+    web_search_meta = _extract_native_web_search_meta(response, query_fallback)
+    return final, web_search_meta
+
+
 def generate(messages, model, stream=True):
     """messages: list of { role, content }. Yields content deltas."""
     client = _get_client()
@@ -90,6 +232,26 @@ def generate(messages, model, stream=True):
         )
         if response.text:
             yield response.text
+
+
+def generate_with_native_web_search(messages, model):
+    """
+    Gemini native web search path only (no fallback).
+    Yields ("status", msg), ("chunk", text), then ("result", (final_content, web_search_meta)).
+    """
+    if not get_api_key("google"):
+        raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY not set")
+
+    print("Google web search path: native google_search grounding")
+    yield ("status", "Searching the web...")
+    final, web_search_meta = _generate_with_native_web_search(messages, model)
+    total_sources = sum(len((entry or {}).get("results") or []) for entry in (web_search_meta or []))
+    print(f"Google native web search succeeded (sources={total_sources})")
+    if final:
+        chunk_size = 50
+        for i in range(0, len(final), chunk_size):
+            yield ("chunk", final[i:i + chunk_size])
+    yield ("result", (final, web_search_meta))
 
 
 def generate_with_tools(messages, model, tools, tool_runner):

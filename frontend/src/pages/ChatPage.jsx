@@ -30,6 +30,10 @@ const SIDEBAR_MAX_WIDTH = 460;
 const SIDEBAR_COLLAPSED_WIDTH = 68;
 const CHAT_MAIN_MIN_WIDTH = 360;
 const MOBILE_SIDEBAR_BREAKPOINT = 768;
+const WEB_SEARCH_MODE_OFF = "off";
+const WEB_SEARCH_MODE_NATIVE = "native";
+const WEB_SEARCH_MODE_TAVILY = "tavily";
+const NATIVE_WEB_SEARCH_SUPPORTED_PROVIDERS = new Set(["openai", "anthropic", "google"]);
 
 function clampSidebarWidth(width) {
   const parsed = Number(width);
@@ -67,6 +71,14 @@ function getChatInitial(title) {
   return text ? text[0].toUpperCase() : "?";
 }
 
+function normalizeWebSearchMode(mode) {
+  const value = String(mode || "").trim().toLowerCase();
+  if ([WEB_SEARCH_MODE_OFF, WEB_SEARCH_MODE_NATIVE, WEB_SEARCH_MODE_TAVILY].includes(value)) {
+    return value;
+  }
+  return WEB_SEARCH_MODE_OFF;
+}
+
 export default function ChatPage() {
   const [chats, setChats] = useState([]);
   const [currentChat, setCurrentChat] = useState(null);
@@ -84,7 +96,7 @@ export default function ChatPage() {
   const [menuOpenForMessageId, setMenuOpenForMessageId] = useState(null);
   const [contextDropdownOpen, setContextDropdownOpen] = useState(false);
   const [pendingContextIds, setPendingContextIds] = useState([]);
-  const [pendingWebSearchEnabled, setPendingWebSearchEnabled] = useState(false);
+  const [pendingWebSearchMode, setPendingWebSearchMode] = useState(WEB_SEARCH_MODE_OFF);
   const [availableRules, setAvailableRules] = useState([]);
   const [availableCommands, setAvailableCommands] = useState([]);
   const [pickerType, setPickerType] = useState(null); // "rule" | "command" | null
@@ -197,6 +209,9 @@ export default function ChatPage() {
       .then(([chatsData, modelsData, contextsData, rulesData, commandsData, settingsData]) => {
         setChats(chatsData);
         setContexts(contextsData || []);
+        setPendingWebSearchMode(
+          normalizeWebSearchMode(settingsData?.default_web_search_mode || WEB_SEARCH_MODE_OFF),
+        );
         const available = (modelsData || []).filter((m) => m.available);
         setModels(available);
         setAvailableRules(rulesData || []);
@@ -263,6 +278,15 @@ export default function ChatPage() {
   }, [currentChat?.id, sending]);
 
   const selectedContextIds = currentChat ? (currentChat.context_ids || []) : pendingContextIds;
+  const selectedModelInfo = models.find((m) => m.id === selectedModel) || null;
+  const nativeWebSearchSupportedForSelectedModel = !!selectedModelInfo
+    && NATIVE_WEB_SEARCH_SUPPORTED_PROVIDERS.has(selectedModelInfo.provider);
+  const currentChatWebSearchMode = currentChat
+    ? normalizeWebSearchMode(currentChat.web_search_mode ?? (currentChat.web_search_enabled ? WEB_SEARCH_MODE_TAVILY : WEB_SEARCH_MODE_OFF))
+    : null;
+  const effectiveWebSearchMode = currentChat
+    ? currentChatWebSearchMode
+    : normalizeWebSearchMode(pendingWebSearchMode);
   const handleContextToggle = (id) => {
     const next = selectedContextIds.includes(id)
       ? selectedContextIds.filter((x) => x !== id)
@@ -671,6 +695,10 @@ export default function ChatPage() {
   const handleSend = () => {
     const content = inputValue.trim();
     if (!content || !selectedModel) return;
+    if (effectiveWebSearchMode === WEB_SEARCH_MODE_NATIVE && !nativeWebSearchSupportedForSelectedModel) {
+      setError("Native web search is available for OpenAI, Anthropic, and Google models.");
+      return;
+    }
     setSending(true);
     setError(null);
     setStreamingContent("");
@@ -681,7 +709,10 @@ export default function ChatPage() {
     setPendingAttachments([]);
 
     if (!currentChat) {
-      createChat({ context_ids: pendingContextIds, web_search_enabled: pendingWebSearchEnabled })
+      createChat({
+        context_ids: pendingContextIds,
+        web_search_mode: normalizeWebSearchMode(pendingWebSearchMode),
+      })
         .then((chat) => {
           const chatIdForStream = chat.id;
           streamingChatIdRef.current = chatIdForStream;
@@ -1385,24 +1416,45 @@ export default function ChatPage() {
               )}
             </div>
             <label className="web-search-toggle">
-              <input
-                type="checkbox"
-                checked={currentChat ? !!currentChat.web_search_enabled : pendingWebSearchEnabled}
-                onChange={() => {
+              <span>Web search</span>
+              <select
+                className="model-select"
+                value={effectiveWebSearchMode}
+                onChange={(e) => {
+                  const nextMode = normalizeWebSearchMode(e.target.value);
+                  if (
+                    nextMode === WEB_SEARCH_MODE_NATIVE
+                    && !nativeWebSearchSupportedForSelectedModel
+                  ) {
+                    return;
+                  }
                   if (currentChat) {
-                    updateChat(currentChat.id, { web_search_enabled: !currentChat.web_search_enabled })
+                    updateChat(currentChat.id, { web_search_mode: nextMode })
                       .then((updated) => {
                         setCurrentChat(updated);
                         setChats((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
                       })
-                      .catch((e) => setError(e.message));
+                      .catch((err) => setError(err.message));
                   } else {
-                    setPendingWebSearchEnabled((prev) => !prev);
+                    setPendingWebSearchMode(nextMode);
                   }
                 }}
-              />
-              <span>Web search</span>
+              >
+                <option value={WEB_SEARCH_MODE_OFF}>Off</option>
+                <option
+                  value={WEB_SEARCH_MODE_NATIVE}
+                  disabled={!nativeWebSearchSupportedForSelectedModel}
+                >
+                  Native
+                </option>
+                <option value={WEB_SEARCH_MODE_TAVILY}>Tavily</option>
+              </select>
             </label>
+            {!nativeWebSearchSupportedForSelectedModel && (
+              <span className="context-selector-empty">
+                Native search currently supports OpenAI, Anthropic, and Google.
+              </span>
+            )}
           </div>
           {pendingAttachments.length > 0 && (
             <div className="input-attachments">

@@ -210,12 +210,12 @@ def _generate_with_native_web_search(messages, model):
     return final, web_search_meta
 
 
-def _generate_with_tavily_fallback(messages, model, tool_runner):
-    """Fallback path: existing function-tool loop backed by Tavily."""
+def _generate_with_tavily_tool_loop(messages, model, tool_runner):
+    """Tavily path: existing function-tool loop backed by Tavily."""
     from backend.services.tools_schema import WEB_SEARCH_TOOL
     from backend.services import tools_schema
 
-    print("OpenAI web search path: Tavily fallback")
+    print("OpenAI web search path: Tavily")
     client = _get_client()
     openai_tools = tools_schema.openai_tools()
     web_search_meta = []
@@ -284,33 +284,44 @@ def _generate_with_tavily_fallback(messages, model, tool_runner):
             chunk_size = 50
             for i in range(0, len(final), chunk_size):
                 yield ("chunk", final[i : i + chunk_size])
-        print(f"OpenAI Tavily fallback complete (search_calls={len(web_search_meta)})")
+        print(f"OpenAI Tavily search complete (search_calls={len(web_search_meta)})")
         yield ("result", (final, web_search_meta))
         return
 
 
-def generate_with_tools(messages, model, tools, tool_runner):
+def generate_with_native_web_search(messages, model):
     """
-    Web-search-enabled generation for OpenAI.
-    Primary: Responses API native web_search tool.
-    Fallback: existing Tavily-backed function tool loop.
+    OpenAI native web search path only (no fallback).
+    Yields ("status", msg), ("chunk", text), then ("result", (final_content, web_search_meta)).
     """
     if not get_api_key("openai"):
         raise ValueError("OPENAI_API_KEY not set")
 
     print("OpenAI web search path: native Responses API (attempt)")
-    try:
-        yield ("status", "Searching the web...")
-        final, web_search_meta = _generate_with_native_web_search(messages, model)
-        total_sources = sum(len((entry or {}).get("results") or []) for entry in (web_search_meta or []))
-        print(f"OpenAI native web search succeeded (sources={total_sources})")
-        if final:
-            chunk_size = 50
-            for i in range(0, len(final), chunk_size):
-                yield ("chunk", final[i : i + chunk_size])
-        yield ("result", (final, web_search_meta))
-        return
-    except Exception as e:
-        print(f"OpenAI native web search failed; falling back to Tavily: {e}")
+    yield ("status", "Searching the web...")
+    final, web_search_meta = _generate_with_native_web_search(messages, model)
+    total_sources = sum(len((entry or {}).get("results") or []) for entry in (web_search_meta or []))
+    print(f"OpenAI native web search succeeded (sources={total_sources})")
+    if final:
+        chunk_size = 50
+        for i in range(0, len(final), chunk_size):
+            yield ("chunk", final[i : i + chunk_size])
+    yield ("result", (final, web_search_meta))
 
-    yield from _generate_with_tavily_fallback(messages, model, tool_runner)
+
+def generate_with_tavily_web_search(messages, model, tool_runner):
+    """
+    OpenAI Tavily tool path only (no native attempt).
+    Yields ("status", msg), ("chunk", text), then ("result", (final_content, web_search_meta)).
+    """
+    if not get_api_key("openai"):
+        raise ValueError("OPENAI_API_KEY not set")
+    yield from _generate_with_tavily_tool_loop(messages, model, tool_runner)
+
+
+def generate_with_tools(messages, model, tools, tool_runner):
+    """
+    Backward-compatible entrypoint: preserved for callers that still use this symbol.
+    Uses native mode only.
+    """
+    yield from generate_with_native_web_search(messages, model)

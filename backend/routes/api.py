@@ -34,8 +34,16 @@ from backend.services.models_config import (
 )
 from backend.services.settings_store import (
     get_settings_for_api,
+    get_default_web_search_mode,
     update_settings,
     invalidate_provider_clients,
+)
+from backend.services.web_search_mode import (
+    WEB_SEARCH_MODE_OFF,
+    is_web_search_enabled,
+    mode_from_legacy_enabled,
+    parse_web_search_mode,
+    resolve_chat_web_search_mode,
 )
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -68,6 +76,11 @@ def put_settings():
             if k in ("openai", "anthropic", "google", "tavily") and v is not None:
                 s = str(v).strip()
                 updates["api_keys"][k] = s  # allow empty string for removal
+    if "default_web_search_mode" in data:
+        mode = parse_web_search_mode(data.get("default_web_search_mode"))
+        if mode is None:
+            return jsonify({"error": "default_web_search_mode must be one of: off, native, tavily"}), 400
+        updates["default_web_search_mode"] = mode
     update_settings(updates)
     if "api_keys" in updates:
         invalidate_provider_clients()
@@ -92,6 +105,22 @@ def _safe_rule_or_command_id(id_str):
     if not re.match(r"^[a-zA-Z0-9_-]+$", id_str):
         return None
     return id_str
+
+
+def _mode_from_payload(data, *, default_mode=WEB_SEARCH_MODE_OFF):
+    """
+    Read web search mode from payload, with legacy boolean compatibility.
+    Returns (mode, error_str_or_none).
+    """
+    if "web_search_mode" in data:
+        raw = data.get("web_search_mode")
+        mode = parse_web_search_mode(raw if raw is not None else WEB_SEARCH_MODE_OFF)
+        if mode is None:
+            return None, "web_search_mode must be one of: off, native, tavily"
+        return mode, None
+    if "web_search_enabled" in data:
+        return mode_from_legacy_enabled(bool(data.get("web_search_enabled"))), None
+    return default_mode, None
 
 
 @api_bp.route("/contexts", methods=["GET"])
@@ -397,8 +426,16 @@ def list_chats():
 def create_chat():
     data = request.get_json() or {}
     context_ids = data.get("context_ids", [])
-    web_search_enabled = data.get("web_search_enabled", False)
-    chat = Chat(title="New chat", context_ids=context_ids, web_search_enabled=bool(web_search_enabled))
+    default_mode = get_default_web_search_mode()
+    web_search_mode, err = _mode_from_payload(data, default_mode=default_mode)
+    if err:
+        return jsonify({"error": err}), 400
+    chat = Chat(
+        title="New chat",
+        context_ids=context_ids,
+        web_search_enabled=is_web_search_enabled(web_search_mode),
+        web_search_mode=web_search_mode,
+    )
     db.session.add(chat)
     db.session.commit()
     return jsonify(chat.to_dict()), 201
@@ -421,8 +458,15 @@ def update_chat(chat_id):
     if "title" in data:
         title = (data.get("title") or "").strip()
         chat.title = title[:80] if title else chat.title
-    if "web_search_enabled" in data:
-        chat.web_search_enabled = bool(data["web_search_enabled"])
+    if "web_search_mode" in data or "web_search_enabled" in data:
+        web_search_mode, err = _mode_from_payload(
+            data,
+            default_mode=resolve_chat_web_search_mode(chat),
+        )
+        if err:
+            return jsonify({"error": err}), 400
+        chat.web_search_mode = web_search_mode
+        chat.web_search_enabled = is_web_search_enabled(web_search_mode)
     db.session.commit()
     return jsonify(chat.to_dict())
 
@@ -547,6 +591,8 @@ def regenerate_message(chat_id):
             break
         messages_for_llm.append({"role": m.role, "content": message_to_llm_content(m) if m.role == "user" else m.content})
 
+    chat_web_search_mode = resolve_chat_web_search_mode(chat)
+
     def stream():
         from backend.providers import base as providers_base
         from backend.services.command_evaluator import evaluate_command_response, execute_task_stream
@@ -566,7 +612,11 @@ def regenerate_message(chat_id):
                 full_content = ""
                 previous_feedback = None
                 web_search_meta = None
-                use_web_search = getattr(cmd_regen, "web_search_enabled", False)
+                command_web_search_mode = (
+                    chat_web_search_mode
+                    if getattr(cmd_regen, "web_search_enabled", False)
+                    else WEB_SEARCH_MODE_OFF
+                )
                 for attempt in range(1, 4):
                     buffer = []
                     for item in execute_task_stream(
@@ -576,7 +626,7 @@ def regenerate_message(chat_id):
                         messages_before_user,
                         model_id,
                         previous_feedback=previous_feedback,
-                        use_web_search=use_web_search,
+                        web_search_mode=command_web_search_mode,
                     ):
                         if isinstance(item, tuple):
                             if item[0] == "status":
@@ -624,11 +674,19 @@ def regenerate_message(chat_id):
                 if web_search_meta is not None:
                     meta = {"web_search": web_search_meta}
             else:
-                web_search_enabled = getattr(cmd_regen, "web_search_enabled", False) if cmd_regen else getattr(chat, "web_search_enabled", False)
-                if web_search_enabled:
+                web_search_mode = (
+                    chat_web_search_mode
+                    if (not cmd_regen or getattr(cmd_regen, "web_search_enabled", False))
+                    else WEB_SEARCH_MODE_OFF
+                )
+                if is_web_search_enabled(web_search_mode):
                     try:
                         full_content, web_search_meta = None, []
-                        for event in providers_base.generate_with_web_search(messages_for_llm, model_id):
+                        for event in providers_base.generate_with_web_search(
+                            messages_for_llm,
+                            model_id,
+                            web_search_mode=web_search_mode,
+                        ):
                             if event[0] == "status":
                                 yield f"data: {json.dumps({'t': 'executing', 'msg': event[1]})}\n\n"
                             elif event[0] == "result":
@@ -813,6 +871,7 @@ def add_message(chat_id):
     )
     user_instructions = content.split(None, 1)[1] if cmd_name and content.split() else (content or "")
     messages_before_user = [{"role": m["role"], "content": m["content"]} for m in messages_for_llm[:-1]]
+    chat_web_search_mode = resolve_chat_web_search_mode(chat)
 
     def stream():
         from backend.providers import base as providers_base
@@ -827,7 +886,11 @@ def add_message(chat_id):
                 full_content = ""
                 previous_feedback = None
                 web_search_meta = None
-                use_web_search = getattr(cmd, "web_search_enabled", False)
+                command_web_search_mode = (
+                    chat_web_search_mode
+                    if getattr(cmd, "web_search_enabled", False)
+                    else WEB_SEARCH_MODE_OFF
+                )
                 for attempt in range(1, 4):
                     # Collect chunks without yielding them yet - wait for evaluation
                     buffer = []
@@ -838,7 +901,7 @@ def add_message(chat_id):
                         messages_before_user,
                         model_id,
                         previous_feedback=previous_feedback,
-                        use_web_search=use_web_search,
+                        web_search_mode=command_web_search_mode,
                     ):
                         if isinstance(item, tuple):
                             if item[0] == "status":
@@ -891,12 +954,20 @@ def add_message(chat_id):
                 if web_search_meta is not None:
                     meta = {"web_search": web_search_meta}
             else:
-                # Command invoked but no evaluation: use command's web search setting only
-                web_search_enabled = getattr(cmd, "web_search_enabled", False) if cmd else getattr(chat, "web_search_enabled", False)
-                if web_search_enabled:
+                # Command invoked but no evaluation: command search on/off, mode inherited from chat.
+                web_search_mode = (
+                    chat_web_search_mode
+                    if (not cmd or getattr(cmd, "web_search_enabled", False))
+                    else WEB_SEARCH_MODE_OFF
+                )
+                if is_web_search_enabled(web_search_mode):
                     try:
                         full_content, web_search_meta = None, []
-                        for event in providers_base.generate_with_web_search(messages_for_llm, model_id):
+                        for event in providers_base.generate_with_web_search(
+                            messages_for_llm,
+                            model_id,
+                            web_search_mode=web_search_mode,
+                        ):
                             if event[0] == "status":
                                 yield f"data: {json.dumps({'t': 'executing', 'msg': event[1]})}\n\n"
                             elif event[0] == "result":

@@ -4,6 +4,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from backend.services.prompt_builder import Command
 from backend.services.prompt_loader import load_prompt
+from backend.services.web_search_mode import (
+    WEB_SEARCH_MODE_OFF,
+    is_web_search_enabled,
+    normalize_web_search_mode,
+)
 
 
 def execute_task_stream(
@@ -13,12 +18,12 @@ def execute_task_stream(
     messages_before_user: List[Dict[str, str]],
     model_id: str,
     previous_feedback: Optional[str] = None,
-    use_web_search: bool = False,
+    web_search_mode: str = WEB_SEARCH_MODE_OFF,
 ):
     """Execute command task and stream response.
 
     If previous_feedback is provided, include it in the user message for retry.
-    When use_web_search is False, yields string chunks. When True, yields
+    When web search mode is off, yields string chunks. When enabled, yields
     ("status", str), ("chunk", str), ("meta", list) for the API to forward.
     """
     from backend.providers import base as providers_base
@@ -50,12 +55,20 @@ def execute_task_stream(
     messages_for_llm.extend(messages_before_user)
     messages_for_llm.append({"role": "user", "content": user_content})
 
-    if not use_web_search:
+    resolved_web_search_mode = normalize_web_search_mode(
+        web_search_mode,
+        default=WEB_SEARCH_MODE_OFF,
+    )
+    if not is_web_search_enabled(resolved_web_search_mode):
         yield from providers_base.generate(messages_for_llm, model_id, stream=True)
         return
 
-    # use_web_search: yield ("status", msg), then ("chunk", full_content), then ("meta", web_search_meta)
-    for event in providers_base.generate_with_web_search(messages_for_llm, model_id):
+    # web search enabled: yield ("status", msg), then ("chunk", full_content), then ("meta", web_search_meta)
+    for event in providers_base.generate_with_web_search(
+        messages_for_llm,
+        model_id,
+        web_search_mode=resolved_web_search_mode,
+    ):
         if event[0] == "status":
             yield ("status", event[1])
         elif event[0] == "result":

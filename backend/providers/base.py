@@ -1,5 +1,13 @@
 """Shared generate interface: messages, model_id, stream -> yield chunks."""
 
+from backend.services.web_search_mode import (
+    WEB_SEARCH_MODE_NATIVE,
+    WEB_SEARCH_MODE_OFF,
+    WEB_SEARCH_MODE_TAVILY,
+    normalize_web_search_mode,
+)
+
+
 def generate(messages, model_id, stream=True):
     """Dispatch to the right provider. Yields text chunks."""
     from backend.services.models_config import get_model_info
@@ -47,12 +55,15 @@ def _web_search_tool_runner(name, args):
     return (content_str, {"query": query, "results": results})
 
 
-def generate_with_web_search(messages, model_id):
+def generate_with_web_search(messages, model_id, web_search_mode=WEB_SEARCH_MODE_TAVILY):
     """
     Run generate with web_search tool; non-streaming.
     Yields ("status", msg) when a search is about to run, then ("result", (final_content, web_search_meta)).
     """
     from backend.services.models_config import get_model_info
+    mode = normalize_web_search_mode(web_search_mode, default=WEB_SEARCH_MODE_OFF)
+    if mode == WEB_SEARCH_MODE_OFF:
+        raise ValueError("Web search mode is off.")
     info = get_model_info(model_id)
     if not info:
         raise ValueError(f"Unknown or unavailable model: {model_id}")
@@ -60,13 +71,28 @@ def generate_with_web_search(messages, model_id):
     model = info["model"]
     if provider == "openai":
         from backend.providers import openai_provider
-        gen = openai_provider.generate_with_tools(messages, model, None, _web_search_tool_runner)
+        if mode == WEB_SEARCH_MODE_NATIVE:
+            gen = openai_provider.generate_with_native_web_search(messages, model)
+        elif mode == WEB_SEARCH_MODE_TAVILY:
+            gen = openai_provider.generate_with_tavily_web_search(messages, model, _web_search_tool_runner)
+        else:
+            raise ValueError(f"Unsupported web search mode: {mode}")
     elif provider == "anthropic":
         from backend.providers import anthropic_provider
-        gen = anthropic_provider.generate_with_tools(messages, model, None, _web_search_tool_runner)
+        if mode == WEB_SEARCH_MODE_NATIVE:
+            gen = anthropic_provider.generate_with_native_web_search(messages, model)
+        elif mode == WEB_SEARCH_MODE_TAVILY:
+            gen = anthropic_provider.generate_with_tools(messages, model, None, _web_search_tool_runner)
+        else:
+            raise ValueError(f"Unsupported web search mode: {mode}")
     elif provider == "google":
         from backend.providers import google_provider
-        gen = google_provider.generate_with_tools(messages, model, None, _web_search_tool_runner)
+        if mode == WEB_SEARCH_MODE_NATIVE:
+            gen = google_provider.generate_with_native_web_search(messages, model)
+        elif mode == WEB_SEARCH_MODE_TAVILY:
+            gen = google_provider.generate_with_tools(messages, model, None, _web_search_tool_runner)
+        else:
+            raise ValueError(f"Unsupported web search mode: {mode}")
     else:
         raise ValueError(f"Unknown provider: {provider}")
     yield from gen

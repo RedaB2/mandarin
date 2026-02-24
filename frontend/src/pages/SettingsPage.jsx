@@ -18,6 +18,11 @@ const HIDDEN_KEY_INPUT_STATE = PROVIDERS.reduce((acc, provider) => {
 }, {});
 const CLEAR_ALL_KEYS_HELP_TEXT =
   "Clears all API keys saved in app settings after confirmation. This helps remove local sensitive data for security/data handling reasons.";
+const WEB_SEARCH_MODE_OPTIONS = [
+  { id: "off", label: "Off" },
+  { id: "native", label: "Native" },
+  { id: "tavily", label: "Tavily" },
+];
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState(null);
@@ -27,6 +32,7 @@ export default function SettingsPage() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [defaultModel, setDefaultModel] = useState("");
+  const [defaultWebSearchMode, setDefaultWebSearchMode] = useState("off");
   const [apiKeyDrafts, setApiKeyDrafts] = useState(() => ({ ...BLANK_API_KEY_STATE }));
   const [showKeyInput, setShowKeyInput] = useState(() => ({ ...HIDDEN_KEY_INPUT_STATE }));
   const hasAnyApiKeySet = PROVIDERS.some((provider) => settings?.api_keys?.[provider]?.set);
@@ -38,6 +44,7 @@ export default function SettingsPage() {
         const available = (modelsData || []).filter((m) => m.available);
         setModels(available);
         setDefaultModel(settingsData.default_model || "");
+        setDefaultWebSearchMode((settingsData.default_web_search_mode || "off").toLowerCase());
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -47,10 +54,14 @@ export default function SettingsPage() {
     setSaving(true);
     setError(null);
     setSuccess(null);
-    putSettings({ default_model: defaultModel || null })
+    putSettings({
+      default_model: defaultModel || null,
+      default_web_search_mode: defaultWebSearchMode,
+    })
       .then((data) => {
         setSettings(data);
-        setSuccess("Default model saved.");
+        setDefaultWebSearchMode((data.default_web_search_mode || "off").toLowerCase());
+        setSuccess("Default model and web search mode saved.");
         setTimeout(() => setSuccess(null), 3000);
       })
       .catch((e) => setError(e.message))
@@ -170,13 +181,24 @@ export default function SettingsPage() {
                 </option>
               ))}
             </select>
+            <select
+              className="settings-select"
+              value={defaultWebSearchMode}
+              onChange={(e) => setDefaultWebSearchMode((e.target.value || "off").toLowerCase())}
+            >
+              {WEB_SEARCH_MODE_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  Default web search: {option.label}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               className="settings-btn primary"
               onClick={handleSaveDefaultModel}
               disabled={saving}
             >
-              {saving ? "Saving…" : "Save default model"}
+              {saving ? "Saving…" : "Save defaults"}
             </button>
           </div>
         </div>
