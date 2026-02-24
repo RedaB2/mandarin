@@ -1077,7 +1077,22 @@ body.sidebar-resizing * {
   gap: 0.5rem;
   margin-bottom: 0.5rem;
 }
-.model-select,
+.model-select {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
+  height: 2rem;
+  padding: 0 0.5rem;
+  padding-right: 1.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
+  box-sizing: border-box;
+}
 .context-selector-btn {
   width: min(11rem, 100%);
   min-width: 8.5rem;
@@ -1092,9 +1107,6 @@ body.sidebar-resizing * {
   font-family: var(--font-sans);
   font-size: 0.9375rem;
   box-sizing: border-box;
-}
-.model-select {
-  padding-right: 1.5rem;
 }
 .context-selector-wrap {
   position: relative;
@@ -1173,6 +1185,7 @@ body.sidebar-resizing * {
   gap: 0.4rem;
   font-size: 0.9rem;
   cursor: pointer;
+  margin-left: auto;
 }
 .web-search-toggle input { flex-shrink: 0; }
 
