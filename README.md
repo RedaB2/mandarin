@@ -1,5 +1,7 @@
 # Mandarin
 
+![Mandarin logo](frontend/mandarin-logo.png)
+
 A personal context manager for everyday LLM chats that uses your own context and memory to give relevant, personalized help.
 
 ---
