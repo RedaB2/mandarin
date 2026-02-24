@@ -16,17 +16,23 @@ class Chat(db.Model):
     updated_at = db.Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     context_ids = db.Column(JSON, nullable=True)  # list of context file ids
     web_search_enabled = db.Column(db.Boolean, default=False, nullable=False)
+    web_search_mode = db.Column(Text, nullable=False, default="off")
 
     messages = db.relationship("Message", backref="chat", order_by="Message.created_at", cascade="all, delete-orphan")
 
     def to_dict(self):
+        from backend.services.web_search_mode import resolve_chat_web_search_mode
+
+        web_search_mode = resolve_chat_web_search_mode(self)
         return {
             "id": self.id,
             "title": self.title,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "context_ids": self.context_ids or [],
-            "web_search_enabled": getattr(self, "web_search_enabled", False),
+            # Keep legacy boolean for backward compatibility while clients migrate.
+            "web_search_enabled": web_search_mode != "off",
+            "web_search_mode": web_search_mode,
         }
 
 

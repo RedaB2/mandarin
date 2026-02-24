@@ -4,6 +4,10 @@ import json
 from pathlib import Path
 
 import config
+from backend.services.web_search_mode import (
+    WEB_SEARCH_MODE_OFF,
+    normalize_web_search_mode,
+)
 
 SETTINGS_PATH = config.DATA_DIR / "settings.json"
 
@@ -69,7 +73,19 @@ def get_settings_for_api():
             "set": bool(k),
             "masked": mask_key(k),
         }
-    return {"api_keys": effective}
+    return {
+        "api_keys": effective,
+        "default_web_search_mode": get_default_web_search_mode(),
+    }
+
+
+def get_default_web_search_mode():
+    """Return persisted default web search mode for new chats."""
+    data = _load_raw()
+    return normalize_web_search_mode(
+        data.get("default_web_search_mode"),
+        default=WEB_SEARCH_MODE_OFF,
+    )
 
 
 def update_settings(updates):
@@ -87,6 +103,11 @@ def update_settings(updates):
                     elif k in current:
                         del current[k]
             data["api_keys"] = current
+    if "default_web_search_mode" in updates:
+        data["default_web_search_mode"] = normalize_web_search_mode(
+            updates.get("default_web_search_mode"),
+            default=WEB_SEARCH_MODE_OFF,
+        )
     _save_raw(data)
 
 

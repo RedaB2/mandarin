@@ -24,12 +24,13 @@ app.register_blueprint(api_bp)
 
 with app.app_context():
     db.create_all()
-    # Migration: add web_search and message.meta columns if missing (e.g. existing DBs)
+    # Migration: add web_search/search_mode and message metadata columns if missing.
     try:
         from sqlalchemy import text
         with db.engine.connect() as conn:
             for stmt in (
                 "ALTER TABLE chats ADD COLUMN web_search_enabled BOOLEAN DEFAULT 0",
+                "ALTER TABLE chats ADD COLUMN web_search_mode TEXT DEFAULT 'off'",
                 "ALTER TABLE messages ADD COLUMN meta JSON",
                 "ALTER TABLE messages ADD COLUMN attachments JSON",
             ):
@@ -38,6 +39,20 @@ with app.app_context():
                     conn.commit()
                 except Exception:
                     pass
+            # Backfill explicit mode from legacy boolean for older rows.
+            try:
+                conn.execute(
+                    text(
+                        "UPDATE chats "
+                        "SET web_search_mode = CASE "
+                        "WHEN COALESCE(web_search_enabled, 0) = 1 THEN 'tavily' "
+                        "ELSE 'off' END "
+                        "WHERE web_search_mode IS NULL OR TRIM(web_search_mode) = ''"
+                    )
+                )
+                conn.commit()
+            except Exception:
+                pass
     except Exception:
         pass
     sync_memories_from_db(app)

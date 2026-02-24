@@ -22,6 +22,62 @@ const VIEWPORT_PADDING = 8;
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 const MAX_ATTACHMENTS = 3;
 const ALLOWED_ATTACHMENT_EXTENSIONS = [".pdf", ".docx", ".txt", ".md", ".py", ".png", ".jpg", ".jpeg", ".webp"];
+const SIDEBAR_WIDTH_STORAGE_KEY = "mandarin-chat-sidebar-width";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "mandarin-chat-sidebar-collapsed";
+const SIDEBAR_DEFAULT_WIDTH = 260;
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_MAX_WIDTH = 460;
+const SIDEBAR_COLLAPSED_WIDTH = 68;
+const CHAT_MAIN_MIN_WIDTH = 360;
+const MOBILE_SIDEBAR_BREAKPOINT = 768;
+const WEB_SEARCH_MODE_OFF = "off";
+const WEB_SEARCH_MODE_NATIVE = "native";
+const WEB_SEARCH_MODE_TAVILY = "tavily";
+const NATIVE_WEB_SEARCH_SUPPORTED_PROVIDERS = new Set(["openai", "anthropic", "google"]);
+
+function clampSidebarWidth(width) {
+  const parsed = Number(width);
+  if (!Number.isFinite(parsed)) return SIDEBAR_DEFAULT_WIDTH;
+  if (typeof window === "undefined") {
+    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsed));
+  }
+  const viewportLimitedMax = Math.max(
+    SIDEBAR_MIN_WIDTH,
+    Math.min(SIDEBAR_MAX_WIDTH, window.innerWidth - CHAT_MAIN_MIN_WIDTH),
+  );
+  return Math.min(viewportLimitedMax, Math.max(SIDEBAR_MIN_WIDTH, parsed));
+}
+
+function getInitialSidebarWidth() {
+  try {
+    const stored = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    if (stored == null) return SIDEBAR_DEFAULT_WIDTH;
+    return clampSidebarWidth(stored);
+  } catch {
+    return SIDEBAR_DEFAULT_WIDTH;
+  }
+}
+
+function getInitialSidebarCollapsed() {
+  try {
+    return JSON.parse(localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) ?? "false");
+  } catch {
+    return false;
+  }
+}
+
+function getChatInitial(title) {
+  const text = String(title || "").trim();
+  return text ? text[0].toUpperCase() : "?";
+}
+
+function normalizeWebSearchMode(mode) {
+  const value = String(mode || "").trim().toLowerCase();
+  if ([WEB_SEARCH_MODE_OFF, WEB_SEARCH_MODE_NATIVE, WEB_SEARCH_MODE_TAVILY].includes(value)) {
+    return value;
+  }
+  return WEB_SEARCH_MODE_OFF;
+}
 
 export default function ChatPage() {
   const [chats, setChats] = useState([]);
@@ -40,7 +96,7 @@ export default function ChatPage() {
   const [menuOpenForMessageId, setMenuOpenForMessageId] = useState(null);
   const [contextDropdownOpen, setContextDropdownOpen] = useState(false);
   const [pendingContextIds, setPendingContextIds] = useState([]);
-  const [pendingWebSearchEnabled, setPendingWebSearchEnabled] = useState(false);
+  const [pendingWebSearchMode, setPendingWebSearchMode] = useState(WEB_SEARCH_MODE_OFF);
   const [availableRules, setAvailableRules] = useState([]);
   const [availableCommands, setAvailableCommands] = useState([]);
   const [pickerType, setPickerType] = useState(null); // "rule" | "command" | null
@@ -54,11 +110,21 @@ export default function ChatPage() {
   const [menuOpenForChatId, setMenuOpenForChatId] = useState(null);
   const [expandedSourcesMessageIds, setExpandedSourcesMessageIds] = useState(new Set());
   const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [sidebarWidth, setSidebarWidth] = useState(() => getInitialSidebarWidth());
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => getInitialSidebarCollapsed());
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(
+    () => (typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(`(max-width: ${MOBILE_SIDEBAR_BREAKPOINT}px)`).matches
+      : false),
+  );
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const menuTriggerRef = useRef(null);
   const menuRef = useRef(null);
   const contextDropdownRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
+  const sidebarResizeRef = useRef({ startX: 0, startWidth: SIDEBAR_DEFAULT_WIDTH });
   const streamingChatIdRef = useRef(null);
   const streamAbortControllerRef = useRef(null);
   const currentChatIdRef = useRef(currentChat?.id ?? null);
@@ -67,10 +133,85 @@ export default function ChatPage() {
   }, [currentChat?.id]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    const mediaQuery = window.matchMedia(`(max-width: ${MOBILE_SIDEBAR_BREAKPOINT}px)`);
+    const updateViewport = (event) => setIsMobileViewport(event.matches);
+    setIsMobileViewport(mediaQuery.matches);
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", updateViewport);
+      return () => mediaQuery.removeEventListener("change", updateViewport);
+    }
+    mediaQuery.addListener(updateViewport);
+    return () => mediaQuery.removeListener(updateViewport);
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => setSidebarWidth((prev) => clampSidebarWidth(prev));
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingSidebar || isMobileViewport) return;
+    const onPointerMove = (event) => {
+      const delta = event.clientX - sidebarResizeRef.current.startX;
+      setSidebarWidth(clampSidebarWidth(sidebarResizeRef.current.startWidth + delta));
+    };
+    const stopResizing = () => setIsResizingSidebar(false);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopResizing);
+    document.body.classList.add("sidebar-resizing");
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopResizing);
+      document.body.classList.remove("sidebar-resizing");
+    };
+  }, [isResizingSidebar, isMobileViewport]);
+
+  useEffect(() => {
+    if (isMobileViewport) setIsResizingSidebar(false);
+  }, [isMobileViewport]);
+
+  useEffect(() => {
+    if (!isMobileSidebarOpen) return;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setIsMobileSidebarOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [isMobileSidebarOpen]);
+
+  useEffect(() => {
+    if (!isMobileViewport) setIsMobileSidebarOpen(false);
+  }, [isMobileViewport]);
+
+  useEffect(() => {
+    if (!isSidebarCollapsed) return;
+    setMenuOpenForChatId(null);
+    setRenamingChatId(null);
+  }, [isSidebarCollapsed]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(clampSidebarWidth(sidebarWidth))));
+    } catch {}
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, JSON.stringify(isSidebarCollapsed));
+    } catch {}
+  }, [isSidebarCollapsed]);
+
+  useEffect(() => {
     Promise.all([getChats(), getModels(), getContexts(), getRules(), getCommands(), getSettings()])
       .then(([chatsData, modelsData, contextsData, rulesData, commandsData, settingsData]) => {
         setChats(chatsData);
         setContexts(contextsData || []);
+        setPendingWebSearchMode(
+          normalizeWebSearchMode(settingsData?.default_web_search_mode || WEB_SEARCH_MODE_OFF),
+        );
         const available = (modelsData || []).filter((m) => m.available);
         setModels(available);
         setAvailableRules(rulesData || []);
@@ -137,6 +278,15 @@ export default function ChatPage() {
   }, [currentChat?.id, sending]);
 
   const selectedContextIds = currentChat ? (currentChat.context_ids || []) : pendingContextIds;
+  const selectedModelInfo = models.find((m) => m.id === selectedModel) || null;
+  const nativeWebSearchSupportedForSelectedModel = !!selectedModelInfo
+    && NATIVE_WEB_SEARCH_SUPPORTED_PROVIDERS.has(selectedModelInfo.provider);
+  const currentChatWebSearchMode = currentChat
+    ? normalizeWebSearchMode(currentChat.web_search_mode ?? (currentChat.web_search_enabled ? WEB_SEARCH_MODE_TAVILY : WEB_SEARCH_MODE_OFF))
+    : null;
+  const effectiveWebSearchMode = currentChat
+    ? currentChatWebSearchMode
+    : normalizeWebSearchMode(pendingWebSearchMode);
   const handleContextToggle = (id) => {
     const next = selectedContextIds.includes(id)
       ? selectedContextIds.filter((x) => x !== id)
@@ -156,10 +306,29 @@ export default function ChatPage() {
   const handleNewChat = () => {
     setCurrentChat(null);
     setMessages([]);
+    setIsMobileSidebarOpen(false);
   };
 
   const handleSelectChat = (chat) => {
     setCurrentChat(chat);
+    setIsMobileSidebarOpen(false);
+  };
+
+  const toggleSidebarCollapsed = () => {
+    setIsSidebarCollapsed((prev) => !prev);
+    setMenuOpenForChatId(null);
+    setRenamingChatId(null);
+  };
+
+  const closeMobileSidebar = () => {
+    setIsMobileSidebarOpen(false);
+  };
+
+  const startSidebarResize = (event) => {
+    if (isMobileViewport || isSidebarCollapsed) return;
+    event.preventDefault();
+    sidebarResizeRef.current = { startX: event.clientX, startWidth: sidebarWidth };
+    setIsResizingSidebar(true);
   };
 
   const isPersistedMessage = (msg) =>
@@ -526,6 +695,10 @@ export default function ChatPage() {
   const handleSend = () => {
     const content = inputValue.trim();
     if (!content || !selectedModel) return;
+    if (effectiveWebSearchMode === WEB_SEARCH_MODE_NATIVE && !nativeWebSearchSupportedForSelectedModel) {
+      setError("Native web search is available for OpenAI, Anthropic, and Google models.");
+      return;
+    }
     setSending(true);
     setError(null);
     setStreamingContent("");
@@ -536,7 +709,10 @@ export default function ChatPage() {
     setPendingAttachments([]);
 
     if (!currentChat) {
-      createChat({ context_ids: pendingContextIds, web_search_enabled: pendingWebSearchEnabled })
+      createChat({
+        context_ids: pendingContextIds,
+        web_search_mode: normalizeWebSearchMode(pendingWebSearchMode),
+      })
         .then((chat) => {
           const chatIdForStream = chat.id;
           streamingChatIdRef.current = chatIdForStream;
@@ -822,14 +998,81 @@ export default function ChatPage() {
     setSelectedPickerIndex((i) => (list.length ? Math.min(i, list.length - 1) : 0));
   }, [pickerType, pickerQuery, filteredCommands.length, filteredRules.length]);
 
+  const isDesktopSidebarCollapsed = !isMobileViewport && isSidebarCollapsed;
+  const sidebarInlineWidth = isDesktopSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth;
+  const sidebarStyle = isMobileViewport
+    ? undefined
+    : { "--sidebar-width": `${Math.round(sidebarInlineWidth)}px` };
+
   return (
-    <div className="chat-page">
-      <aside className="sidebar">
-        <button className="new-chat-btn" onClick={() => handleNewChat()}>
-          + New chat
-        </button>
+    <div className={`chat-page ${isResizingSidebar ? "chat-page--sidebar-resizing" : ""}`}>
+      {isMobileViewport && isMobileSidebarOpen && (
+        <button
+          type="button"
+          className="sidebar-mobile-backdrop"
+          onClick={closeMobileSidebar}
+          aria-label="Close chats sidebar"
+        />
+      )}
+      <aside
+        className={`sidebar ${isDesktopSidebarCollapsed ? "sidebar--collapsed" : ""} ${isMobileViewport ? "sidebar--mobile" : ""} ${isMobileSidebarOpen ? "sidebar--mobile-open" : ""}`}
+        style={sidebarStyle}
+        aria-hidden={isMobileViewport && !isMobileSidebarOpen}
+      >
+        <div className="sidebar-header">
+          <button
+            type="button"
+            className="sidebar-toggle-btn"
+            onClick={isMobileViewport ? closeMobileSidebar : toggleSidebarCollapsed}
+            aria-label={
+              isMobileViewport
+                ? "Close sidebar"
+                : isDesktopSidebarCollapsed
+                  ? "Expand sidebar"
+                  : "Collapse sidebar"
+            }
+            aria-expanded={isMobileViewport ? undefined : !isDesktopSidebarCollapsed}
+            title={
+              isMobileViewport
+                ? "Close sidebar"
+                : isDesktopSidebarCollapsed
+                  ? "Expand sidebar"
+                  : "Collapse sidebar"
+            }
+          >
+            {isMobileViewport ? "×" : isDesktopSidebarCollapsed ? "»" : "«"}
+          </button>
+          <button
+            className="new-chat-btn"
+            onClick={() => handleNewChat()}
+            title={isDesktopSidebarCollapsed ? "New chat" : undefined}
+            aria-label="New chat"
+          >
+            {isDesktopSidebarCollapsed ? "+" : "+ New chat"}
+          </button>
+        </div>
         {loading ? (
           <p className="sidebar-loading">Loading...</p>
+        ) : isDesktopSidebarCollapsed ? (
+          <ul className="chat-list chat-list--collapsed">
+            {chats.length === 0 ? (
+              <li className="sidebar-empty sidebar-empty--compact">No chats</li>
+            ) : (
+              chats.map((c) => (
+                <li key={c.id} className="chat-list-item chat-list-item--collapsed">
+                  <button
+                    type="button"
+                    className={`chat-item chat-item--collapsed ${currentChat?.id === c.id ? "active" : ""}`}
+                    onClick={() => handleSelectChat(c)}
+                    title={c.title || "Untitled chat"}
+                    aria-label={`Open chat: ${c.title || "Untitled chat"}`}
+                  >
+                    <span className="chat-item-collapsed-label">{getChatInitial(c.title)}</span>
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
         ) : (
           <>
             <ul className="chat-list">
@@ -913,7 +1156,28 @@ export default function ChatPage() {
           </>
         )}
       </aside>
+      {!isMobileViewport && !isDesktopSidebarCollapsed && (
+        <div
+          className="sidebar-resize-handle"
+          role="separator"
+          aria-label="Resize chats sidebar"
+          aria-orientation="vertical"
+          onPointerDown={startSidebarResize}
+        />
+      )}
       <section className="chat-main">
+        {isMobileViewport && (
+          <div className="chat-mobile-toolbar">
+            <button
+              type="button"
+              className="sidebar-mobile-open-btn"
+              onClick={() => setIsMobileSidebarOpen(true)}
+              aria-label="Open chats sidebar"
+            >
+              ☰ Chats
+            </button>
+          </div>
+        )}
         {error && (
           <div className="error-banner">
             {error}
@@ -1152,24 +1416,45 @@ export default function ChatPage() {
               )}
             </div>
             <label className="web-search-toggle">
-              <input
-                type="checkbox"
-                checked={currentChat ? !!currentChat.web_search_enabled : pendingWebSearchEnabled}
-                onChange={() => {
+              <span>Web search</span>
+              <select
+                className="model-select"
+                value={effectiveWebSearchMode}
+                onChange={(e) => {
+                  const nextMode = normalizeWebSearchMode(e.target.value);
+                  if (
+                    nextMode === WEB_SEARCH_MODE_NATIVE
+                    && !nativeWebSearchSupportedForSelectedModel
+                  ) {
+                    return;
+                  }
                   if (currentChat) {
-                    updateChat(currentChat.id, { web_search_enabled: !currentChat.web_search_enabled })
+                    updateChat(currentChat.id, { web_search_mode: nextMode })
                       .then((updated) => {
                         setCurrentChat(updated);
                         setChats((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
                       })
-                      .catch((e) => setError(e.message));
+                      .catch((err) => setError(err.message));
                   } else {
-                    setPendingWebSearchEnabled((prev) => !prev);
+                    setPendingWebSearchMode(nextMode);
                   }
                 }}
-              />
-              <span>Web search</span>
+              >
+                <option value={WEB_SEARCH_MODE_OFF}>Off</option>
+                <option
+                  value={WEB_SEARCH_MODE_NATIVE}
+                  disabled={!nativeWebSearchSupportedForSelectedModel}
+                >
+                  Native
+                </option>
+                <option value={WEB_SEARCH_MODE_TAVILY}>Tavily</option>
+              </select>
             </label>
+            {!nativeWebSearchSupportedForSelectedModel && (
+              <span className="context-selector-empty">
+                Native search currently supports OpenAI, Anthropic, and Google.
+              </span>
+            )}
           </div>
           {pendingAttachments.length > 0 && (
             <div className="input-attachments">
