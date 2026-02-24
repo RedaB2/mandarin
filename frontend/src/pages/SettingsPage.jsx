@@ -7,6 +7,17 @@ const PROVIDER_LABELS = {
   google: "Google (Gemini)",
   tavily: "Tavily (Web Search)",
 };
+const PROVIDERS = ["openai", "anthropic", "google", "tavily"];
+const BLANK_API_KEY_STATE = PROVIDERS.reduce((acc, provider) => {
+  acc[provider] = "";
+  return acc;
+}, {});
+const HIDDEN_KEY_INPUT_STATE = PROVIDERS.reduce((acc, provider) => {
+  acc[provider] = false;
+  return acc;
+}, {});
+const CLEAR_ALL_KEYS_HELP_TEXT =
+  "Clears all API keys saved in app settings after confirmation. This helps remove local sensitive data for security/data handling reasons.";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState(null);
@@ -16,8 +27,9 @@ export default function SettingsPage() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [defaultModel, setDefaultModel] = useState("");
-  const [apiKeyDrafts, setApiKeyDrafts] = useState({ openai: "", anthropic: "", google: "", tavily: "" });
-  const [showKeyInput, setShowKeyInput] = useState({ openai: false, anthropic: false, google: false, tavily: false });
+  const [apiKeyDrafts, setApiKeyDrafts] = useState(() => ({ ...BLANK_API_KEY_STATE }));
+  const [showKeyInput, setShowKeyInput] = useState(() => ({ ...HIDDEN_KEY_INPUT_STATE }));
+  const hasAnyApiKeySet = PROVIDERS.some((provider) => settings?.api_keys?.[provider]?.set);
 
   useEffect(() => {
     Promise.all([getSettings(), getModels()])
@@ -75,6 +87,30 @@ export default function SettingsPage() {
         setApiKeyDrafts((prev) => ({ ...prev, [provider]: "" }));
         setShowKeyInput((prev) => ({ ...prev, [provider]: false }));
         setSuccess(`${PROVIDER_LABELS[provider]} API key removed.`);
+        setTimeout(() => setSuccess(null), 3000);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setSaving(false));
+  };
+
+  const handleClearAllApiKeys = () => {
+    const confirmed = window.confirm(
+      "Clear all API keys saved in app settings?\n\nThis removes locally stored keys for OpenAI, Anthropic, Google, and Tavily. Keys set in .env are not removed here."
+    );
+    if (!confirmed) return;
+    setSaving(true);
+    setError(null);
+    setSuccess(null);
+    const clearedApiKeys = PROVIDERS.reduce((acc, provider) => {
+      acc[provider] = "";
+      return acc;
+    }, {});
+    putSettings({ api_keys: clearedApiKeys })
+      .then((data) => {
+        setSettings(data);
+        setApiKeyDrafts({ ...BLANK_API_KEY_STATE });
+        setShowKeyInput({ ...HIDDEN_KEY_INPUT_STATE });
+        setSuccess("All saved API keys cleared.");
         setTimeout(() => setSuccess(null), 3000);
       })
       .catch((e) => setError(e.message))
@@ -149,9 +185,35 @@ export default function SettingsPage() {
           <div className="settings-card-header">
             <h3>API keys</h3>
             <span className="settings-hint">Stored locally. Keys from .env take precedence.</span>
+            <div className="settings-api-key-actions">
+              <button
+                type="button"
+                className="settings-btn danger small"
+                onClick={handleClearAllApiKeys}
+                disabled={saving || !hasAnyApiKeySet}
+              >
+                {saving ? "Saving…" : "Clear all API keys"}
+              </button>
+              <span className="settings-help-tooltip">
+                <span
+                  className="settings-help-icon"
+                  tabIndex={0}
+                  aria-describedby="clear-all-api-keys-help"
+                >
+                  ?
+                </span>
+                <span
+                  id="clear-all-api-keys-help"
+                  className="settings-help-tooltip-content"
+                  role="tooltip"
+                >
+                  {CLEAR_ALL_KEYS_HELP_TEXT}
+                </span>
+              </span>
+            </div>
           </div>
           <div className="settings-api-key-list">
-            {["openai", "anthropic", "google", "tavily"].map((provider) => {
+            {PROVIDERS.map((provider) => {
               const keyInfo = settings?.api_keys?.[provider] || {};
               const isSet = keyInfo.set;
               const showInput = showKeyInput[provider];
