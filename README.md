@@ -55,7 +55,7 @@ Deprecated OS-specific wrappers were moved to `scripts/legacy/`.
 
 ## Status
 
-**Early development** — built for personal use and shared with a small group. Not intended for public release.
+**Early development** — built for personal use and shared with a small group. Not intended for commercial release.
 
 ### Known Issues
 
