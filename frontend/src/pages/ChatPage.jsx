@@ -22,6 +22,19 @@ const VIEWPORT_PADDING = 8;
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 const MAX_ATTACHMENTS = 3;
 const ALLOWED_ATTACHMENT_EXTENSIONS = [".pdf", ".docx", ".txt", ".md", ".py", ".png", ".jpg", ".jpeg", ".webp"];
+const ATTACHMENT_EXTENSION_BY_MIME = {
+  "application/pdf": ".pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "text/plain": ".txt",
+  "text/markdown": ".md",
+  "text/x-python": ".py",
+  "application/x-python-code": ".py",
+  "text/x-script.python": ".py",
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/jpg": ".jpg",
+  "image/webp": ".webp",
+};
 const SIDEBAR_WIDTH_STORAGE_KEY = "mandarin-chat-sidebar-width";
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "mandarin-chat-sidebar-collapsed";
 const SIDEBAR_DEFAULT_WIDTH = 260;
@@ -34,6 +47,45 @@ const WEB_SEARCH_MODE_OFF = "off";
 const WEB_SEARCH_MODE_NATIVE = "native";
 const WEB_SEARCH_MODE_TAVILY = "tavily";
 const NATIVE_WEB_SEARCH_SUPPORTED_PROVIDERS = new Set(["openai", "anthropic", "google"]);
+
+function getFileExtension(name) {
+  const value = String(name || "");
+  if (!value.includes(".")) return "";
+  return `.${value.split(".").pop().toLowerCase()}`;
+}
+
+function getImageExtensionFromMime(mimeType) {
+  const normalized = String(mimeType || "").split(";")[0].trim().toLowerCase();
+  if (normalized === "image/jpeg" || normalized === "image/jpg") return ".jpg";
+  if (normalized === "image/webp") return ".webp";
+  return ".png";
+}
+
+function normalizeClipboardAttachmentFile(file, index = 0) {
+  if (!file) return null;
+  const currentName = String(file.name || "").trim();
+  const currentExt = getFileExtension(currentName);
+  const normalizedType = String(file.type || "").split(";")[0].trim().toLowerCase();
+  const fallbackExt = ATTACHMENT_EXTENSION_BY_MIME[normalizedType]
+    || (normalizedType.startsWith("image/") ? getImageExtensionFromMime(normalizedType) : "");
+  let nextName = currentName;
+  if (!nextName) {
+    const stamp = new Date().toISOString().replace(/[^0-9]/g, "");
+    const baseName = normalizedType.startsWith("image/") ? "pasted-image" : "pasted-file";
+    nextName = `${baseName}-${stamp}-${index + 1}${fallbackExt}`;
+  } else if (!currentExt) {
+    nextName = `${nextName}${fallbackExt}`;
+  }
+  if (nextName === currentName) return file;
+  try {
+    return new File([file], nextName, {
+      type: normalizedType || "application/octet-stream",
+      lastModified: file.lastModified || Date.now(),
+    });
+  } catch {
+    return file;
+  }
+}
 
 function clampSidebarWidth(width) {
   const parsed = Number(width);
@@ -79,6 +131,41 @@ function normalizeWebSearchMode(mode) {
   return WEB_SEARCH_MODE_OFF;
 }
 
+function parseInvokedCommandId(content) {
+  const match = String(content || "").trim().match(/^\/([a-zA-Z0-9_-]+)\b/);
+  return match ? match[1] : null;
+}
+
+function isCommandWebSearchModeExplicit(command) {
+  if (!command || typeof command !== "object") return false;
+  if (typeof command.web_search_mode_explicit === "boolean") {
+    return command.web_search_mode_explicit;
+  }
+  return false;
+}
+
+function resolveCommandWebSearchMode(command, chatWebSearchMode) {
+  const normalizedChatMode = normalizeWebSearchMode(chatWebSearchMode);
+  if (!command || typeof command !== "object") {
+    return normalizedChatMode;
+  }
+  if (isCommandWebSearchModeExplicit(command)) {
+    return normalizeWebSearchMode(command.web_search_mode);
+  }
+  return command.web_search_enabled ? normalizedChatMode : WEB_SEARCH_MODE_OFF;
+}
+
+function webSearchModeLabel(mode) {
+  switch (normalizeWebSearchMode(mode)) {
+    case WEB_SEARCH_MODE_NATIVE:
+      return "Native";
+    case WEB_SEARCH_MODE_TAVILY:
+      return "Tavily";
+    default:
+      return "Off";
+  }
+}
+
 export default function ChatPage() {
   const [chats, setChats] = useState([]);
   const [currentChat, setCurrentChat] = useState(null);
@@ -90,6 +177,7 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [error, setError] = useState(null);
+  const [webSearchConflictPrompt, setWebSearchConflictPrompt] = useState(null);
   const [contexts, setContexts] = useState([]);
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingContent, setEditingContent] = useState("");
@@ -110,6 +198,7 @@ export default function ChatPage() {
   const [menuOpenForChatId, setMenuOpenForChatId] = useState(null);
   const [expandedSourcesMessageIds, setExpandedSourcesMessageIds] = useState(new Set());
   const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [isInputDragActive, setIsInputDragActive] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => getInitialSidebarWidth());
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => getInitialSidebarCollapsed());
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
@@ -124,6 +213,7 @@ export default function ChatPage() {
   const contextDropdownRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
+  const inputDragDepthRef = useRef(0);
   const sidebarResizeRef = useRef({ startX: 0, startWidth: SIDEBAR_DEFAULT_WIDTH });
   const streamingChatIdRef = useRef(null);
   const streamAbortControllerRef = useRef(null);
@@ -215,7 +305,14 @@ export default function ChatPage() {
         const available = (modelsData || []).filter((m) => m.available);
         setModels(available);
         setAvailableRules(rulesData || []);
-        setAvailableCommands(commandsData || []);
+        setAvailableCommands(
+          (commandsData || []).map((cmd) => ({
+            ...cmd,
+            web_search_mode: normalizeWebSearchMode(
+              cmd.web_search_mode ?? (cmd.web_search_enabled ? WEB_SEARCH_MODE_TAVILY : WEB_SEARCH_MODE_OFF),
+            ),
+          })),
+        );
         if (available.length && !selectedModel) {
           const defaultId = (settingsData?.default_model || "").trim();
           const defaultAvailable = defaultId && available.some((m) => m.id === defaultId);
@@ -669,43 +766,177 @@ export default function ChatPage() {
       });
   };
 
+  const queueAttachments = (incomingFiles) => {
+    const files = Array.from(incomingFiles || []);
+    if (files.length === 0) return;
+
+    const valid = [];
+    let errorMessage = null;
+    for (const file of files) {
+      if (!file) continue;
+      const ext = getFileExtension(file.name);
+      if (file.size > MAX_ATTACHMENT_SIZE) {
+        errorMessage = `File too large: ${file.name || "attachment"} (max 10 MB)`;
+        continue;
+      }
+      if (!ALLOWED_ATTACHMENT_EXTENSIONS.includes(ext)) {
+        errorMessage = `File type not allowed: ${file.name || "attachment"}`;
+        continue;
+      }
+      valid.push(file);
+    }
+
+    if (valid.length === 0) {
+      if (errorMessage) setError(errorMessage);
+      return;
+    }
+
+    const availableSlots = Math.max(0, MAX_ATTACHMENTS - pendingAttachments.length);
+    if (availableSlots === 0) {
+      setError(`You can attach up to ${MAX_ATTACHMENTS} files.`);
+      return;
+    }
+
+    const accepted = valid.slice(0, availableSlots);
+    if (accepted.length < valid.length) {
+      errorMessage = `You can attach up to ${MAX_ATTACHMENTS} files.`;
+    }
+    setPendingAttachments((prev) => [...prev, ...accepted]);
+    if (webSearchConflictPrompt) {
+      setWebSearchConflictPrompt(null);
+    }
+    setError(errorMessage);
+  };
+
+  const hasDraggedFiles = (event) => Array.from(event?.dataTransfer?.types || []).includes("Files");
+
+  const resetInputDragState = () => {
+    inputDragDepthRef.current = 0;
+    setIsInputDragActive(false);
+  };
+
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
-    const ext = (name) => (name.includes(".") ? "." + name.split(".").pop().toLowerCase() : "");
-    const valid = files.filter((f) => {
-      if (f.size > MAX_ATTACHMENT_SIZE) {
-        setError(`File too large: ${f.name} (max 10 MB)`);
-        return false;
-      }
-      if (!ALLOWED_ATTACHMENT_EXTENSIONS.includes(ext(f.name))) {
-        setError(`File type not allowed: ${f.name}`);
-        return false;
-      }
-      return true;
-    });
-    setError(null);
-    setPendingAttachments((prev) => [...prev, ...valid].slice(0, MAX_ATTACHMENTS));
+    queueAttachments(files);
+  };
+
+  const handleInputDragEnter = (e) => {
+    if (sending || !hasDraggedFiles(e)) return;
+    e.preventDefault();
+    inputDragDepthRef.current += 1;
+    setIsInputDragActive(true);
+  };
+
+  const handleInputDragOver = (e) => {
+    if (sending || !hasDraggedFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    if (!isInputDragActive) setIsInputDragActive(true);
+  };
+
+  const handleInputDragLeave = (e) => {
+    if (!hasDraggedFiles(e)) return;
+    e.preventDefault();
+    inputDragDepthRef.current = Math.max(0, inputDragDepthRef.current - 1);
+    if (inputDragDepthRef.current === 0) setIsInputDragActive(false);
+  };
+
+  const handleInputDrop = (e) => {
+    if (!hasDraggedFiles(e)) return;
+    e.preventDefault();
+    resetInputDragState();
+    if (sending) return;
+    const droppedFiles = Array.from(e.dataTransfer?.files || []);
+    queueAttachments(droppedFiles);
+  };
+
+  const handleInputPaste = (e) => {
+    if (sending) return;
+    const clipboardData = e.clipboardData;
+    if (!clipboardData) return;
+
+    const fileItems = Array.from(clipboardData.items || [])
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    const clipboardFiles = (
+      fileItems.length > 0
+        ? fileItems
+        : Array.from(clipboardData.files || [])
+    ).map((file, idx) => normalizeClipboardAttachmentFile(file, idx)).filter(Boolean);
+
+    if (clipboardFiles.length === 0) return;
+
+    e.preventDefault();
+    queueAttachments(clipboardFiles);
   };
 
   const removeAttachment = (index) => {
     setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
+    if (webSearchConflictPrompt) {
+      setWebSearchConflictPrompt(null);
+    }
   };
 
-  const handleSend = () => {
-    const content = inputValue.trim();
+  const handleSend = (options = {}) => {
+    const content = String(options.content ?? inputValue).trim();
     if (!content || !selectedModel) return;
-    if (effectiveWebSearchMode === WEB_SEARCH_MODE_NATIVE && !nativeWebSearchSupportedForSelectedModel) {
+    const attachmentsForSend = Array.isArray(options.attachments)
+      ? options.attachments
+      : pendingAttachments;
+    const invokedCommandId = options.invokedCommandId ?? parseInvokedCommandId(content);
+    const invokedCommand = invokedCommandId
+      ? availableCommands.find((cmd) => cmd.id === invokedCommandId)
+      : null;
+    const chatWebSearchMode = normalizeWebSearchMode(effectiveWebSearchMode);
+    const hasForcedCommandMode = options.commandWebSearchMode != null;
+    const commandDefaultWebSearchMode = hasForcedCommandMode
+      ? normalizeWebSearchMode(options.commandWebSearchMode)
+      : (
+        invokedCommand
+          ? resolveCommandWebSearchMode(invokedCommand, chatWebSearchMode)
+          : chatWebSearchMode
+      );
+    const hasForcedRequestMode = options.requestWebSearchMode != null;
+    const requestWebSearchMode = hasForcedRequestMode
+      ? normalizeWebSearchMode(options.requestWebSearchMode)
+      : commandDefaultWebSearchMode;
+    const hasInvokedCommand = !!invokedCommandId;
+    if (
+      !hasForcedRequestMode
+      && invokedCommand
+      && isCommandWebSearchModeExplicit(invokedCommand)
+      && commandDefaultWebSearchMode !== chatWebSearchMode
+    ) {
+      setWebSearchConflictPrompt({
+        content,
+        attachments: [...attachmentsForSend],
+        commandId: invokedCommand.id,
+        commandMode: commandDefaultWebSearchMode,
+        chatMode: chatWebSearchMode,
+      });
+      return;
+    }
+    if (webSearchConflictPrompt) {
+      setWebSearchConflictPrompt(null);
+    }
+    const webSearchModeOverride = (
+      hasInvokedCommand && requestWebSearchMode !== commandDefaultWebSearchMode
+        ? requestWebSearchMode
+        : null
+    );
+    if (requestWebSearchMode === WEB_SEARCH_MODE_NATIVE && !nativeWebSearchSupportedForSelectedModel) {
       setError("Native web search is available for OpenAI, Anthropic, and Google models.");
       return;
     }
     setSending(true);
     setError(null);
     setStreamingContent("");
-    const userMsg = { id: "temp-user", role: "user", content, attachments: pendingAttachments.length ? pendingAttachments.map((f) => ({ type: "file", filename: f.name })) : [] };
+    const userMsg = { id: "temp-user", role: "user", content, attachments: attachmentsForSend.length ? attachmentsForSend.map((f) => ({ type: "file", filename: f.name })) : [] };
     const placeholderAssistant = { id: "temp-assistant", role: "assistant", content: "" };
     setInputValue("");
-    const attachmentsToSend = [...pendingAttachments];
+    const attachmentsToSend = [...attachmentsForSend];
     setPendingAttachments([]);
 
     if (!currentChat) {
@@ -725,6 +956,7 @@ export default function ChatPage() {
           setStreamingStatus(content.trim().startsWith("/") ? "Completing task..." : "Thinking...");
           return addMessageStream(chat.id, content, selectedModel, {
             attachments: attachmentsToSend,
+            webSearchMode: webSearchModeOverride,
             signal: controller.signal,
             onChunk: (c) => setStreamingContent((prev) => prev + c),
             onStatus: (msg) => setStreamingStatus(msg),
@@ -798,6 +1030,7 @@ export default function ChatPage() {
     setStreamingStatus(content.trim().startsWith("/") ? "Completing task..." : "Thinking...");
     addMessageStream(chatIdForStream, content, selectedModel, {
       attachments: attachmentsToSend,
+      webSearchMode: webSearchModeOverride,
       signal: controller.signal,
       onChunk: (c) => setStreamingContent((prev) => prev + c),
       onStatus: (msg) => setStreamingStatus(msg),
@@ -875,9 +1108,30 @@ export default function ChatPage() {
     });
   };
 
+  const handleWebSearchConflictChoice = (source) => {
+    if (!webSearchConflictPrompt || sending) return;
+    const requestWebSearchMode = (
+      source === "command"
+        ? webSearchConflictPrompt.commandMode
+        : webSearchConflictPrompt.chatMode
+    );
+    const queuedPrompt = webSearchConflictPrompt;
+    setWebSearchConflictPrompt(null);
+    handleSend({
+      content: queuedPrompt.content,
+      attachments: queuedPrompt.attachments || [],
+      invokedCommandId: queuedPrompt.commandId,
+      commandWebSearchMode: queuedPrompt.commandMode,
+      requestWebSearchMode,
+    });
+  };
+
   const handleInputChange = (e) => {
     const value = e.target.value;
     setInputValue(value);
+    if (webSearchConflictPrompt) {
+      setWebSearchConflictPrompt(null);
+    }
     setPreviewCommandId(null);
     const cursorIndex = e.target.selectionStart;
     const before = value.slice(0, cursorIndex);
@@ -1450,12 +1704,42 @@ export default function ChatPage() {
                 <option value={WEB_SEARCH_MODE_TAVILY}>Tavily</option>
               </select>
             </label>
-            {!nativeWebSearchSupportedForSelectedModel && (
+            {models.length === 0 && (
+              <span className="context-selector-empty">
+                No available models. Add provider API keys in Settings or check provider connectivity.
+              </span>
+            )}
+            {selectedModelInfo && !nativeWebSearchSupportedForSelectedModel && (
               <span className="context-selector-empty">
                 Native search currently supports OpenAI, Anthropic, and Google.
               </span>
             )}
           </div>
+          {webSearchConflictPrompt && (
+            <div className="web-search-conflict-prompt" role="region" aria-live="polite">
+              <p className="web-search-conflict-text">
+                {`/${webSearchConflictPrompt.commandId} is set to ${webSearchModeLabel(webSearchConflictPrompt.commandMode)} web search, while this chat is set to ${webSearchModeLabel(webSearchConflictPrompt.chatMode)}.`}
+              </p>
+              <div className="web-search-conflict-actions">
+                <button
+                  type="button"
+                  className="web-search-conflict-btn web-search-conflict-btn--command"
+                  onClick={() => handleWebSearchConflictChoice("command")}
+                  disabled={sending}
+                >
+                  Use command search
+                </button>
+                <button
+                  type="button"
+                  className="web-search-conflict-btn web-search-conflict-btn--chat"
+                  onClick={() => handleWebSearchConflictChoice("chat")}
+                  disabled={sending}
+                >
+                  Use chat search
+                </button>
+              </div>
+            </div>
+          )}
           {pendingAttachments.length > 0 && (
             <div className="input-attachments">
               {pendingAttachments.map((file, idx) => (
@@ -1466,7 +1750,13 @@ export default function ChatPage() {
               ))}
             </div>
           )}
-          <div className="input-row">
+          <div
+            className={`input-row${isInputDragActive ? " input-row--drag-active" : ""}`}
+            onDragEnter={handleInputDragEnter}
+            onDragOver={handleInputDragOver}
+            onDragLeave={handleInputDragLeave}
+            onDrop={handleInputDrop}
+          >
             <input
               ref={fileInputRef}
               type="file"
@@ -1492,6 +1782,7 @@ export default function ChatPage() {
               placeholder={currentChat ? "Message..." : "Type a message to start a new chat..."}
               value={inputValue}
               onChange={handleInputChange}
+              onPaste={handleInputPaste}
               onKeyDown={(e) => {
                 if (pickerType && ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(e.key)) {
                   handlePickerKeyDown(e);

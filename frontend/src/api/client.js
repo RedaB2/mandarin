@@ -208,10 +208,28 @@ function fileToBase64(file) {
 
 /**
  * Send message and stream assistant reply. Calls onStarted() when request accepted, onChunk(text) for each chunk, onDone(fullContent, payload) when finished.
- * Optional: signal (AbortSignal) to cancel; onCancel() when aborted. attachments: optional array of File objects (max 3, max 10 MB each). On 4xx, throws with message from body.error.
+ * Optional: signal (AbortSignal) to cancel; onCancel() when aborted. attachments: optional array of File objects (max 3, max 10 MB each).
+ * Optional webSearchMode applies one-time to this request. On 4xx, throws with message from body.error.
  */
-export async function addMessageStream(chatId, content, modelId, { onStarted, onChunk, onDone, onStatus, onCancel, attachments: attachmentFiles = [], signal } = {}) {
+export async function addMessageStream(
+  chatId,
+  content,
+  modelId,
+  {
+    onStarted,
+    onChunk,
+    onDone,
+    onStatus,
+    onCancel,
+    attachments: attachmentFiles = [],
+    webSearchMode = null,
+    signal,
+  } = {}
+) {
   let body = { content, model_id: modelId };
+  if (webSearchMode != null) {
+    body = { ...body, web_search_mode: webSearchMode };
+  }
   if (attachmentFiles.length > 0) {
     const attachments = await Promise.all(
       attachmentFiles.slice(0, MAX_ATTACHMENTS).map(async (file) => ({

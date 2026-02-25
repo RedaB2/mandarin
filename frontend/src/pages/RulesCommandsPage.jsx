@@ -14,6 +14,47 @@ import {
 
 const TAB_RULES = "rules";
 const TAB_COMMANDS = "commands";
+const WEB_SEARCH_MODE_OFF = "off";
+const WEB_SEARCH_MODE_NATIVE = "native";
+const WEB_SEARCH_MODE_TAVILY = "tavily";
+
+function normalizeWebSearchMode(mode) {
+  const value = String(mode || "").trim().toLowerCase();
+  if ([WEB_SEARCH_MODE_OFF, WEB_SEARCH_MODE_NATIVE, WEB_SEARCH_MODE_TAVILY].includes(value)) {
+    return value;
+  }
+  return WEB_SEARCH_MODE_OFF;
+}
+
+function webSearchModeLabel(mode) {
+  switch (normalizeWebSearchMode(mode)) {
+    case WEB_SEARCH_MODE_NATIVE:
+      return "Native";
+    case WEB_SEARCH_MODE_TAVILY:
+      return "Tavily";
+    default:
+      return "Off";
+  }
+}
+
+function emptyCommandDraft() {
+  return {
+    name: "",
+    description: "",
+    tags: [],
+    task: "",
+    success_criteria: "",
+    guidelines: "",
+    context_ids: [],
+    web_search_mode: WEB_SEARCH_MODE_OFF,
+  };
+}
+
+function commandWebSearchModeFromData(data) {
+  return normalizeWebSearchMode(
+    data?.web_search_mode ?? (data?.web_search_enabled ? WEB_SEARCH_MODE_TAVILY : WEB_SEARCH_MODE_OFF),
+  );
+}
 
 function parseCommandSections(body) {
   if (!body || !body.trim()) return { task: "", success_criteria: "", guidelines: "" };
@@ -54,16 +95,7 @@ export default function RulesCommandsPage() {
   const [commandsBodiesById, setCommandsBodiesById] = useState({});
   const [contexts, setContexts] = useState([]);
   const [editingCommandId, setEditingCommandId] = useState(null);
-  const [editingCommandDraft, setEditingCommandDraft] = useState({
-    name: "",
-    description: "",
-    tags: [],
-    task: "",
-    success_criteria: "",
-    guidelines: "",
-    context_ids: [],
-    web_search_enabled: false,
-  });
+  const [editingCommandDraft, setEditingCommandDraft] = useState(emptyCommandDraft());
   const [creatingCommand, setCreatingCommand] = useState(false);
   const [expandedRuleIds, setExpandedRuleIds] = useState(() => new Set());
   const [expandedCommandIds, setExpandedCommandIds] = useState(() => new Set());
@@ -112,10 +144,14 @@ export default function RulesCommandsPage() {
     getContexts().then((list) => setContexts(list || [])).catch(() => {});
     getCommands()
       .then((list) => {
-        setCommands(list || []);
+        const normalizedList = (list || []).map((c) => ({
+          ...c,
+          web_search_mode: commandWebSearchModeFromData(c),
+        }));
+        setCommands(normalizedList);
         // Eagerly load full command data (task, success_criteria, guidelines, context_ids) for display.
         return Promise.all(
-          (list || []).map((c) =>
+          normalizedList.map((c) =>
             getCommand(c.id)
               .then((full) => {
                 const task = full.task != null ? full.task : parseCommandSections(full.body || "").task || "";
@@ -128,7 +164,7 @@ export default function RulesCommandsPage() {
                   success_criteria,
                   guidelines,
                   context_ids: Array.isArray(full.context_ids) ? full.context_ids : [],
-                  web_search_enabled: !!full.web_search_enabled,
+                  web_search_mode: commandWebSearchModeFromData(full),
                 };
               })
               .catch(() => null)
@@ -239,7 +275,7 @@ export default function RulesCommandsPage() {
   const startCreateCommand = () => {
     setCreatingCommand(true);
     setEditingCommandId(null);
-    setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [], web_search_enabled: false });
+    setEditingCommandDraft(emptyCommandDraft());
   };
 
   const startEditCommand = (id) => {
@@ -249,12 +285,13 @@ export default function RulesCommandsPage() {
     if (cached && typeof cached === "object" && "task" in cached) {
       setEditingCommandId(id);
       setEditingCommandDraft({
+        ...emptyCommandDraft(),
         ...meta,
         task: cached.task || "",
         success_criteria: cached.success_criteria || "",
         guidelines: cached.guidelines || "",
         context_ids: Array.isArray(cached.context_ids) ? cached.context_ids : [],
-        web_search_enabled: !!cached.web_search_enabled,
+        web_search_mode: commandWebSearchModeFromData(cached),
       });
       return;
     }
@@ -264,10 +301,11 @@ export default function RulesCommandsPage() {
         const success_criteria = full.success_criteria != null ? full.success_criteria : (parseCommandSections(full.body || "").success_criteria || "");
         const guidelines = full.guidelines != null ? full.guidelines : (parseCommandSections(full.body || "").guidelines || "");
         const context_ids = Array.isArray(full.context_ids) ? full.context_ids : [];
-        const web_search_enabled = !!full.web_search_enabled;
-        setCommandsBodiesById((prev) => ({ ...prev, [full.id]: { body: full.body, task, success_criteria, guidelines, context_ids, web_search_enabled } }));
+        const web_search_mode = commandWebSearchModeFromData(full);
+        setCommandsBodiesById((prev) => ({ ...prev, [full.id]: { body: full.body, task, success_criteria, guidelines, context_ids, web_search_mode } }));
         setEditingCommandId(full.id);
         setEditingCommandDraft({
+          ...emptyCommandDraft(),
           name: full.name || full.id,
           description: full.description || "",
           tags: full.tags || [],
@@ -275,7 +313,7 @@ export default function RulesCommandsPage() {
           success_criteria,
           guidelines,
           context_ids,
-          web_search_enabled,
+          web_search_mode,
         });
       })
       .catch((e) => setError(e.message));
@@ -296,7 +334,7 @@ export default function RulesCommandsPage() {
       return;
     }
     const context_ids = Array.isArray(editingCommandDraft.context_ids) ? editingCommandDraft.context_ids : [];
-    const web_search_enabled = !!editingCommandDraft.web_search_enabled;
+    const web_search_mode = commandWebSearchModeFromData(editingCommandDraft);
     const payload = {
       name: editingCommandDraft.name || targetId,
       description: editingCommandDraft.description || "",
@@ -305,21 +343,22 @@ export default function RulesCommandsPage() {
       success_criteria,
       guidelines,
       context_ids,
-      web_search_enabled,
+      web_search_mode,
     };
     putCommand(targetId, payload)
       .then((saved) => {
+        const savedWebSearchMode = commandWebSearchModeFromData(saved);
         setCommands((prev) => {
           const others = prev.filter((c) => c.id !== saved.id);
-          return [...others, { ...saved, web_search_enabled }].sort((a, b) => a.name.localeCompare(b.name));
+          return [...others, { ...saved, web_search_mode: savedWebSearchMode }].sort((a, b) => a.name.localeCompare(b.name));
         });
         setCommandsBodiesById((prev) => ({
           ...prev,
-          [saved.id]: { task, success_criteria, guidelines, context_ids, web_search_enabled, body: `## Task\n\n${task}\n\n## Success Criteria\n\n${success_criteria}\n\n## Guidelines\n\n${guidelines}` },
+          [saved.id]: { task, success_criteria, guidelines, context_ids, web_search_mode: savedWebSearchMode, body: `## Task\n\n${task}\n\n## Success Criteria\n\n${success_criteria}\n\n## Guidelines\n\n${guidelines}` },
         }));
         setEditingCommandId(null);
         setCreatingCommand(false);
-        setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [], web_search_enabled: false });
+        setEditingCommandDraft(emptyCommandDraft());
       })
       .catch((e) => setError(e.message));
   };
@@ -336,7 +375,7 @@ export default function RulesCommandsPage() {
         });
         if (editingCommandId === id) {
           setEditingCommandId(null);
-          setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [], web_search_enabled: false });
+          setEditingCommandDraft(emptyCommandDraft());
         }
       })
       .catch((e) => setError(e.message));
@@ -348,52 +387,6 @@ export default function RulesCommandsPage() {
       const next = ids.includes(ctxId) ? ids.filter((id) => id !== ctxId) : [...ids, ctxId];
       return { ...prev, context_ids: next };
     });
-  };
-
-  const toggleCommandWebSearch = (command) => {
-    const cached = commandsBodiesById[command.id];
-    const buildPayload = (full) => ({
-      name: full.name || full.id,
-      description: full.description || "",
-      tags: full.tags || [],
-      task: (full.task ?? "").trim(),
-      success_criteria: (full.success_criteria ?? "").trim(),
-      guidelines: (full.guidelines ?? "").trim(),
-      context_ids: Array.isArray(full.context_ids) ? full.context_ids : [],
-      web_search_enabled: !(full.web_search_enabled ?? command.web_search_enabled),
-    });
-    const applySaved = (nextEnabled) => {
-      setCommands((prev) =>
-        prev.map((cmd) => (cmd.id === command.id ? { ...cmd, web_search_enabled: nextEnabled } : cmd))
-      );
-      setCommandsBodiesById((prev) => ({
-        ...prev,
-        [command.id]: { ...(prev[command.id] || {}), web_search_enabled: nextEnabled },
-      }));
-      if (editingCommandId === command.id) {
-        setEditingCommandDraft((prev) => ({ ...prev, web_search_enabled: nextEnabled }));
-      }
-    };
-    if (cached && typeof cached === "object" && (cached.task != null || cached.body != null)) {
-      const full = {
-        ...command,
-        task: cached.task ?? "",
-        success_criteria: cached.success_criteria ?? "",
-        guidelines: cached.guidelines ?? "",
-        context_ids: cached.context_ids ?? [],
-      };
-      const nextEnabled = !(command.web_search_enabled ?? false);
-      putCommand(command.id, buildPayload({ ...full, web_search_enabled: command.web_search_enabled }))
-        .then(() => applySaved(nextEnabled))
-        .catch((e) => setError(e.message));
-    } else {
-      getCommand(command.id)
-        .then((full) => {
-          const nextEnabled = !(full.web_search_enabled ?? false);
-          return putCommand(command.id, buildPayload(full)).then(() => applySaved(nextEnabled));
-        })
-        .catch((e) => setError(e.message));
-    }
   };
 
   const renderRulesTab = () => (
@@ -617,16 +610,17 @@ export default function RulesCommandsPage() {
             )}
           </div>
           <div className="edit-panel-row">
-            <label className="switch-inline">
-              <span className="switch-label">Enable web search for this command</span>
-              <span className="switch">
-                <input
-                  type="checkbox"
-                  checked={!!editingCommandDraft.web_search_enabled}
-                  onChange={(e) => setEditingCommandDraft((prev) => ({ ...prev, web_search_enabled: e.target.checked }))}
-                />
-                <span className="switch-slider" />
-              </span>
+            <label className="web-search-toggle">
+              <span>Web search for this command</span>
+              <select
+                className="model-select"
+                value={commandWebSearchModeFromData(editingCommandDraft)}
+                onChange={(e) => setEditingCommandDraft((prev) => ({ ...prev, web_search_mode: normalizeWebSearchMode(e.target.value) }))}
+              >
+                <option value={WEB_SEARCH_MODE_OFF}>Off</option>
+                <option value={WEB_SEARCH_MODE_NATIVE}>Native</option>
+                <option value={WEB_SEARCH_MODE_TAVILY}>Tavily</option>
+              </select>
             </label>
           </div>
           <div>
@@ -639,7 +633,7 @@ export default function RulesCommandsPage() {
               onClick={() => {
                 setCreatingCommand(false);
                 setEditingCommandId(null);
-                setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [], web_search_enabled: false });
+                setEditingCommandDraft(emptyCommandDraft());
               }}
             >
               Cancel
@@ -668,17 +662,17 @@ export default function RulesCommandsPage() {
                 <span className="context-id-pill" title={c.id}>
                   {c.id}
                 </span>
-                <button
-                  type="button"
+                <span
                   className={
                     "rule-status-pill " +
-                    (c.web_search_enabled ? "rule-status-pill--always" : "rule-status-pill--conditional")
+                    (commandWebSearchModeFromData(c) === WEB_SEARCH_MODE_OFF
+                      ? "rule-status-pill--conditional"
+                      : "rule-status-pill--always")
                   }
-                  onClick={() => toggleCommandWebSearch(c)}
-                  title={c.web_search_enabled ? "Click to turn web search off" : "Click to turn web search on"}
+                  title={`Web search mode: ${webSearchModeLabel(commandWebSearchModeFromData(c))}`}
                 >
-                  {c.web_search_enabled ? "Web search on" : "Web search off"}
-                </button>
+                  {`Web search: ${webSearchModeLabel(commandWebSearchModeFromData(c))}`}
+                </span>
                 <div className="context-card-actions">
                   <button type="button" className="btn small" onClick={() => startEditCommand(c.id)}>
                     Edit
@@ -759,17 +753,18 @@ export default function RulesCommandsPage() {
                     )}
                   </div>
                   <div className="edit-panel-row">
-                    <label className="switch-inline">
-                      <span className="switch-label">Enable web search for this command</span>
-                      <span className="switch">
-                        <input
-                          type="checkbox"
-                          checked={!!editingCommandDraft.web_search_enabled}
-                          onChange={(e) => setEditingCommandDraft((prev) => ({ ...prev, web_search_enabled: e.target.checked }))}
-                          aria-label={`Web search for ${c.id}`}
-                        />
-                        <span className="switch-slider" />
-                      </span>
+                    <label className="web-search-toggle">
+                      <span>Web search for this command</span>
+                      <select
+                        className="model-select"
+                        value={commandWebSearchModeFromData(editingCommandDraft)}
+                        onChange={(e) => setEditingCommandDraft((prev) => ({ ...prev, web_search_mode: normalizeWebSearchMode(e.target.value) }))}
+                        aria-label={`Web search mode for ${c.id}`}
+                      >
+                        <option value={WEB_SEARCH_MODE_OFF}>Off</option>
+                        <option value={WEB_SEARCH_MODE_NATIVE}>Native</option>
+                        <option value={WEB_SEARCH_MODE_TAVILY}>Tavily</option>
+                      </select>
                     </label>
                   </div>
                   <div className="context-card-edit-actions">
@@ -781,7 +776,7 @@ export default function RulesCommandsPage() {
                       className="btn"
                       onClick={() => {
                         setEditingCommandId(null);
-                        setEditingCommandDraft({ name: "", description: "", tags: [], task: "", success_criteria: "", guidelines: "", context_ids: [], web_search_enabled: false });
+                        setEditingCommandDraft(emptyCommandDraft());
                       }}
                     >
                       Cancel
