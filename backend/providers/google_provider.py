@@ -191,6 +191,37 @@ def _extract_native_web_search_meta(response, fallback_query):
     return [{"query": query, "results": results}] if results else []
 
 
+def list_models():
+    """Return normalized Gemini models list: [{ model, name, supported_actions }]."""
+    if not get_api_key("google"):
+        return []
+    client = _get_client()
+    out = []
+    seen = set()
+    for item in client.models.list():
+        raw_name = (_obj_get(item, "name") or "").strip()
+        if not raw_name:
+            continue
+        model_id = raw_name[7:] if raw_name.startswith("models/") else raw_name
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        display_name = (
+            (_obj_get(item, "display_name") or _obj_get(item, "displayName") or "").strip()
+        )
+        supported = _obj_get(item, "supported_actions") or _obj_get(item, "supportedActions") or []
+        supported_actions = [str(action).strip() for action in supported if str(action).strip()]
+        out.append(
+            {
+                "model": model_id,
+                "name": display_name or model_id,
+                "supported_actions": supported_actions,
+            }
+        )
+    out.sort(key=lambda x: x["model"])
+    return out
+
+
 def _generate_with_native_web_search(messages, model):
     """Gemini native web search path using google_search grounding."""
     client = _get_client()

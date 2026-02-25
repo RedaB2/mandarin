@@ -233,6 +233,31 @@ def _generate_with_native_web_search(messages, model):
     return final, web_search_meta
 
 
+def list_models():
+    """Return normalized Anthropic models list: [{ model, name }]."""
+    if not get_api_key("anthropic"):
+        return []
+    client = _get_client()
+    response = client.models.list()
+    items = _obj_get(response, "data")
+    if items is None:
+        try:
+            items = list(response)
+        except TypeError:
+            items = []
+    out = []
+    seen = set()
+    for item in items or []:
+        model_id = (_obj_get(item, "id") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        display_name = (_obj_get(item, "display_name") or "").strip()
+        out.append({"model": model_id, "name": display_name or model_id})
+    out.sort(key=lambda x: x["model"])
+    return out
+
+
 def generate(messages, model, stream=True):
     """messages: list of { role, content }. Yields content deltas."""
     if not get_api_key("anthropic"):

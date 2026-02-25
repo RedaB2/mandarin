@@ -112,7 +112,7 @@ def update_settings(updates):
 
 
 def invalidate_provider_clients():
-    """Clear cached provider clients so they pick up new API keys."""
+    """Clear cached provider clients/model catalog so they pick up new API keys."""
     try:
         from backend.providers import openai_provider
         openai_provider._client = None  # noqa
@@ -126,5 +126,10 @@ def invalidate_provider_clients():
     try:
         from backend.providers import google_provider
         google_provider._client = None  # noqa
+    except Exception:
+        pass
+    try:
+        from backend.services import models_config
+        models_config.invalidate_models_cache()
     except Exception:
         pass

@@ -49,3 +49,42 @@ def resolve_chat_web_search_mode(chat):
     if explicit is not None:
         return explicit
     return mode_from_legacy_enabled(getattr(chat, "web_search_enabled", False))
+
+
+def is_command_web_search_mode_explicit(command):
+    """True when command has an explicit mode set in metadata."""
+    if command is None:
+        return False
+    explicit_flag = getattr(command, "web_search_mode_explicit", None)
+    if explicit_flag is not None:
+        return bool(explicit_flag)
+    return parse_web_search_mode(getattr(command, "web_search_mode", None)) is not None
+
+
+def command_web_search_mode_for_api(command):
+    """
+    Return a stable mode value for API responses.
+
+    Legacy commands without explicit mode fall back to the old boolean field.
+    """
+    explicit = parse_web_search_mode(getattr(command, "web_search_mode", None))
+    if explicit is not None:
+        return explicit
+    return mode_from_legacy_enabled(getattr(command, "web_search_enabled", False))
+
+
+def resolve_command_web_search_mode(command, chat_mode=WEB_SEARCH_MODE_OFF):
+    """
+    Resolve command mode for execution.
+
+    Rules:
+    - explicit command mode wins
+    - legacy command web_search_enabled=True inherits chat mode
+    - otherwise off
+    """
+    explicit = parse_web_search_mode(getattr(command, "web_search_mode", None))
+    if explicit is not None and is_command_web_search_mode_explicit(command):
+        return explicit
+    if bool(getattr(command, "web_search_enabled", False)):
+        return normalize_web_search_mode(chat_mode, default=WEB_SEARCH_MODE_OFF)
+    return WEB_SEARCH_MODE_OFF

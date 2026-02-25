@@ -9,6 +9,11 @@ import yaml
 
 import config
 from backend.services.prompt_loader import load_prompt
+from backend.services.web_search_mode import (
+    WEB_SEARCH_MODE_OFF,
+    mode_from_legacy_enabled,
+    parse_web_search_mode,
+)
 
 
 def _read_base_system_prompt():
@@ -49,6 +54,8 @@ class Command:
         success_criteria: Optional[str] = None,
         guidelines: Optional[str] = None,
         context_ids: Optional[List[str]] = None,
+        web_search_mode: str = WEB_SEARCH_MODE_OFF,
+        web_search_mode_explicit: bool = False,
         web_search_enabled: bool = False,
     ) -> None:
         self.id = id_
@@ -60,6 +67,8 @@ class Command:
         self.success_criteria = success_criteria
         self.guidelines = guidelines
         self.context_ids = context_ids or []
+        self.web_search_mode = web_search_mode
+        self.web_search_mode_explicit = web_search_mode_explicit
         self.web_search_enabled = web_search_enabled
 
 
@@ -227,6 +236,8 @@ def load_commands() -> Dict[str, Command]:
             description = ""
             tags: List[str] = []
             context_ids: List[str] = []
+            web_search_mode = WEB_SEARCH_MODE_OFF
+            web_search_mode_explicit = False
             web_search_enabled = False
             if meta:
                 cid = str(meta.get("id") or cid)
@@ -238,7 +249,15 @@ def load_commands() -> Dict[str, Command]:
                 ctx_ids = meta.get("context_ids") or []
                 if isinstance(ctx_ids, list):
                     context_ids = [str(x) for x in ctx_ids if x]
-                web_search_enabled = bool(meta.get("web_search_enabled", meta.get("web_search", False)))
+                explicit_mode = parse_web_search_mode(meta.get("web_search_mode"))
+                if explicit_mode is not None:
+                    web_search_mode = explicit_mode
+                    web_search_mode_explicit = True
+                    web_search_enabled = explicit_mode != WEB_SEARCH_MODE_OFF
+                else:
+                    web_search_enabled = bool(meta.get("web_search_enabled", meta.get("web_search", False)))
+                    web_search_mode = mode_from_legacy_enabled(web_search_enabled)
+                    web_search_mode_explicit = False
             if not re.match(r"^[a-zA-Z0-9_-]+$", cid):
                 print(f"Skipping command with invalid id {cid!r} in {path}")
                 continue
@@ -257,6 +276,8 @@ def load_commands() -> Dict[str, Command]:
                 success_criteria=sections.get("success_criteria") or None,
                 guidelines=sections.get("guidelines") or None,
                 context_ids=context_ids,
+                web_search_mode=web_search_mode,
+                web_search_mode_explicit=web_search_mode_explicit,
                 web_search_enabled=web_search_enabled,
             )
     _COMMANDS_CACHE = cmds

@@ -40,9 +40,12 @@ from backend.services.settings_store import (
 )
 from backend.services.web_search_mode import (
     WEB_SEARCH_MODE_OFF,
+    command_web_search_mode_for_api,
     is_web_search_enabled,
+    is_command_web_search_mode_explicit,
     mode_from_legacy_enabled,
     parse_web_search_mode,
+    resolve_command_web_search_mode,
     resolve_chat_web_search_mode,
 )
 
@@ -51,7 +54,9 @@ api_bp = Blueprint("api", __name__, url_prefix="/api")
 
 @api_bp.route("/models", methods=["GET"])
 def list_models():
-    return jsonify(get_models_list())
+    refresh_raw = (request.args.get("refresh") or "").strip().lower()
+    force_refresh = refresh_raw in ("1", "true", "yes")
+    return jsonify(get_models_list(force_refresh=force_refresh))
 
 
 @api_bp.route("/settings", methods=["GET"])
@@ -121,6 +126,19 @@ def _mode_from_payload(data, *, default_mode=WEB_SEARCH_MODE_OFF):
     if "web_search_enabled" in data:
         return mode_from_legacy_enabled(bool(data.get("web_search_enabled"))), None
     return default_mode, None
+
+
+def _request_mode_override_from_payload(data):
+    """
+    Read optional one-time request web search mode override.
+    Returns (mode_or_none, error_str_or_none).
+    """
+    if "web_search_mode" not in data:
+        return None, None
+    mode = parse_web_search_mode(data.get("web_search_mode"))
+    if mode is None:
+        return None, "web_search_mode must be one of: off, native, tavily"
+    return mode, None
 
 
 @api_bp.route("/contexts", methods=["GET"])
@@ -254,13 +272,16 @@ def list_commands_route():
     cmds = load_commands()
     out = []
     for c in cmds.values():
+        web_search_mode = command_web_search_mode_for_api(c)
         out.append(
             {
                 "id": c.id,
                 "name": c.name,
                 "description": c.description,
                 "tags": c.tags,
-                "web_search_enabled": getattr(c, "web_search_enabled", False),
+                "web_search_enabled": is_web_search_enabled(web_search_mode),
+                "web_search_mode": web_search_mode,
+                "web_search_mode_explicit": is_command_web_search_mode_explicit(c),
             }
         )
     out.sort(key=lambda x: x["name"].lower())
@@ -291,7 +312,10 @@ def get_command(id):
         out["guidelines"] = c.guidelines
     if getattr(c, "context_ids", None) is not None:
         out["context_ids"] = c.context_ids
-    out["web_search_enabled"] = getattr(c, "web_search_enabled", False)
+    web_search_mode = command_web_search_mode_for_api(c)
+    out["web_search_enabled"] = is_web_search_enabled(web_search_mode)
+    out["web_search_mode"] = web_search_mode
+    out["web_search_mode_explicit"] = is_command_web_search_mode_explicit(c)
     return jsonify(out)
 
 
@@ -318,12 +342,16 @@ def put_command(id):
         context_ids = []
     if context_ids is not None:
         context_ids = [str(x) for x in context_ids if x and re.match(r"^[a-zA-Z0-9_-]+$", str(x))]
-    web_search_enabled = bool(data.get("web_search_enabled", False))
+    web_search_mode, err = _mode_from_payload(data, default_mode=WEB_SEARCH_MODE_OFF)
+    if err:
+        return jsonify({"error": err}), 400
+    web_search_enabled = is_web_search_enabled(web_search_mode)
     meta = {
         "id": safe,
         "name": name,
         "description": description,
         "tags": tags,
+        "web_search_mode": web_search_mode,
         "web_search_enabled": web_search_enabled,
     }
     if context_ids is not None:
@@ -339,6 +367,9 @@ def put_command(id):
             "name": name,
             "description": description,
             "tags": tags,
+            "web_search_mode": web_search_mode,
+            "web_search_enabled": web_search_enabled,
+            "web_search_mode_explicit": True,
         }
     )
 
@@ -545,6 +576,9 @@ def regenerate_message(chat_id):
         return jsonify({"error": "model_id is required"}), 400
     if not get_model_info(model_id):
         return jsonify({"error": "model not available"}), 400
+    request_web_search_mode_override, err = _request_mode_override_from_payload(data)
+    if err:
+        return jsonify({"error": err}), 400
     user_msg = Message.query.filter_by(chat_id=chat_id, id=int(user_message_id)).first_or_404()
     if user_msg.role != "user":
         return jsonify({"error": "message_id must be a user message"}), 400
@@ -592,6 +626,16 @@ def regenerate_message(chat_id):
         messages_for_llm.append({"role": m.role, "content": message_to_llm_content(m) if m.role == "user" else m.content})
 
     chat_web_search_mode = resolve_chat_web_search_mode(chat)
+    base_request_web_search_mode = (
+        resolve_command_web_search_mode(cmd_regen, chat_web_search_mode)
+        if cmd_regen
+        else chat_web_search_mode
+    )
+    resolved_request_web_search_mode = (
+        request_web_search_mode_override
+        if request_web_search_mode_override is not None
+        else base_request_web_search_mode
+    )
 
     def stream():
         from backend.providers import base as providers_base
@@ -612,11 +656,7 @@ def regenerate_message(chat_id):
                 full_content = ""
                 previous_feedback = None
                 web_search_meta = None
-                command_web_search_mode = (
-                    chat_web_search_mode
-                    if getattr(cmd_regen, "web_search_enabled", False)
-                    else WEB_SEARCH_MODE_OFF
-                )
+                command_web_search_mode = resolved_request_web_search_mode
                 for attempt in range(1, 4):
                     buffer = []
                     for item in execute_task_stream(
@@ -674,11 +714,7 @@ def regenerate_message(chat_id):
                 if web_search_meta is not None:
                     meta = {"web_search": web_search_meta}
             else:
-                web_search_mode = (
-                    chat_web_search_mode
-                    if (not cmd_regen or getattr(cmd_regen, "web_search_enabled", False))
-                    else WEB_SEARCH_MODE_OFF
-                )
+                web_search_mode = resolved_request_web_search_mode
                 if is_web_search_enabled(web_search_mode):
                     try:
                         full_content, web_search_meta = None, []
@@ -799,6 +835,9 @@ def add_message(chat_id):
         return jsonify({"error": "model_id is required"}), 400
     if not get_model_info(model_id):
         return jsonify({"error": "model not available"}), 400
+    request_web_search_mode_override, err = _request_mode_override_from_payload(data)
+    if err:
+        return jsonify({"error": err}), 400
 
     # Parse and extract attachments (if any)
     attachments_for_db = None
@@ -872,6 +911,16 @@ def add_message(chat_id):
     user_instructions = content.split(None, 1)[1] if cmd_name and content.split() else (content or "")
     messages_before_user = [{"role": m["role"], "content": m["content"]} for m in messages_for_llm[:-1]]
     chat_web_search_mode = resolve_chat_web_search_mode(chat)
+    base_request_web_search_mode = (
+        resolve_command_web_search_mode(cmd, chat_web_search_mode)
+        if cmd
+        else chat_web_search_mode
+    )
+    resolved_request_web_search_mode = (
+        request_web_search_mode_override
+        if request_web_search_mode_override is not None
+        else base_request_web_search_mode
+    )
 
     def stream():
         from backend.providers import base as providers_base
@@ -886,11 +935,7 @@ def add_message(chat_id):
                 full_content = ""
                 previous_feedback = None
                 web_search_meta = None
-                command_web_search_mode = (
-                    chat_web_search_mode
-                    if getattr(cmd, "web_search_enabled", False)
-                    else WEB_SEARCH_MODE_OFF
-                )
+                command_web_search_mode = resolved_request_web_search_mode
                 for attempt in range(1, 4):
                     # Collect chunks without yielding them yet - wait for evaluation
                     buffer = []
@@ -954,12 +999,7 @@ def add_message(chat_id):
                 if web_search_meta is not None:
                     meta = {"web_search": web_search_meta}
             else:
-                # Command invoked but no evaluation: command search on/off, mode inherited from chat.
-                web_search_mode = (
-                    chat_web_search_mode
-                    if (not cmd or getattr(cmd, "web_search_enabled", False))
-                    else WEB_SEARCH_MODE_OFF
-                )
+                web_search_mode = resolved_request_web_search_mode
                 if is_web_search_enabled(web_search_mode):
                     try:
                         full_content, web_search_meta = None, []

@@ -180,6 +180,25 @@ def _extract_web_search_meta(response, fallback_query):
     return [{"query": query, "results": results}] if results else []
 
 
+def list_models():
+    """Return normalized OpenAI models list: [{ model, name }]."""
+    if not get_api_key("openai"):
+        return []
+    client = _get_client()
+    response = client.models.list()
+    items = _obj_get(response, "data") or []
+    out = []
+    seen = set()
+    for item in items:
+        model_id = (_obj_get(item, "id") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        out.append({"model": model_id, "name": model_id})
+    out.sort(key=lambda x: x["model"])
+    return out
+
+
 def generate(messages, model, stream=True):
     """messages: list of { role, content }. Yields content deltas."""
     if not get_api_key("openai"):

@@ -192,6 +192,11 @@ export default function SettingsPage() {
                 </option>
               ))}
             </select>
+            {models.length === 0 && (
+              <div className="settings-hint">
+                No available models. Add provider API keys or verify provider connectivity.
+              </div>
+            )}
             <button
               type="button"
               className="settings-btn primary"
